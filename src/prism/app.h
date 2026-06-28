@@ -63,7 +63,7 @@ public:
   }
   void set_logger(std::shared_ptr<logger_t> logger)
   {
-    _logger = std::move(logger);
+    _logger = logger ? std::move(logger) : std::make_shared<logger_t>();
   }
 
   // Run a single request through the router. Useful for tests and for

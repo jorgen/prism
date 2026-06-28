@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include <prism/app.h>
 #include <prism/logging.h>
 
 TEST_CASE("logger defaults to info level with a sink")
@@ -15,6 +16,18 @@ TEST_CASE("logger defaults to info level with a sink")
   CHECK(logger.enabled(prism::log_level_t::error));
   CHECK_FALSE(logger.enabled(prism::log_level_t::debug));
   CHECK_FALSE(logger.enabled(prism::log_level_t::trace));
+  CHECK_FALSE(logger.enabled(prism::log_level_t::off));
+}
+
+TEST_CASE("off is a threshold sentinel, never a message level")
+{
+  int count = 0;
+  prism::logger_t logger;
+  logger.set_level(prism::log_level_t::trace);
+  logger.set_sink([&count](prism::log_level_t, std::string_view) { ++count; });
+  CHECK_FALSE(logger.enabled(prism::log_level_t::off));
+  logger.log(prism::log_level_t::off, "should not appear");
+  CHECK(count == 0);
 }
 
 TEST_CASE("logger routes only messages at or above its level to the sink")
@@ -52,6 +65,14 @@ TEST_CASE("logger with a cleared sink is disabled")
   prism::logger_t logger;
   logger.set_sink({});
   CHECK_FALSE(logger.enabled(prism::log_level_t::error));
+}
+
+TEST_CASE("app_t::set_logger normalizes null to a usable logger")
+{
+  prism::app_t app;
+  app.set_logger(nullptr);
+  app.logger().set_level(prism::log_level_t::warn);
+  CHECK(app.logger().level() == prism::log_level_t::warn);
 }
 
 TEST_CASE("log_level_name covers every level")

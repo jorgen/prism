@@ -233,11 +233,12 @@ vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const rout
     const bool access = logger && logger->enabled(log_level_t::info);
     method_t request_method = pending.request.method;
     std::string request_path;
+    std::chrono::steady_clock::time_point started_at{};
     if (access)
     {
       request_path = pending.request.path;
+      started_at = std::chrono::steady_clock::now();
     }
-    auto started_at = std::chrono::steady_clock::now();
 
     response_t response = co_await router->dispatch(std::move(pending.request));
     std::string wire = serialize_response(response, keep_alive, head_request);

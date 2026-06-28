@@ -60,7 +60,7 @@ public:
   }
   [[nodiscard]] bool enabled(log_level_t level) const
   {
-    return static_cast<bool>(_sink) && level >= _level;
+    return static_cast<bool>(_sink) && level != log_level_t::off && level >= _level;
   }
   void log(log_level_t level, std::string_view message) const
   {
