@@ -7,3 +7,4 @@ compile_commands.json
 /3rdparty/
 *.swp
 *.swo
+.cache/

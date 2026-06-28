@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
+#include <optional>
 
 namespace prism
 {
@@ -21,6 +23,76 @@ bool iequals(std::string_view a, std::string_view b)
     }
   }
   return true;
+}
+
+bool is_hex_digit(char c)
+{
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+int hex_value(char c)
+{
+  if (c >= '0' && c <= '9')
+  {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f')
+  {
+    return c - 'a' + 10;
+  }
+  return c - 'A' + 10;
+}
+
+std::string percent_decode(std::string_view in)
+{
+  std::string out;
+  out.reserve(in.size());
+  for (std::size_t i = 0; i < in.size(); ++i)
+  {
+    char c = in[i];
+    if (c == '+')
+    {
+      out.push_back(' ');
+    }
+    else if (c == '%' && i + 2 < in.size() && is_hex_digit(in[i + 1]) && is_hex_digit(in[i + 2]))
+    {
+      out.push_back(static_cast<char>((hex_value(in[i + 1]) << 4) | hex_value(in[i + 2])));
+      i += 2;
+    }
+    else
+    {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+
+std::optional<std::string> find_query(std::string_view target, std::string_view name)
+{
+  std::size_t mark = target.find('?');
+  if (mark == std::string_view::npos)
+  {
+    return std::nullopt;
+  }
+  std::string_view rest = target.substr(mark + 1);
+  while (!rest.empty())
+  {
+    std::size_t amp = rest.find('&');
+    std::string_view pair = amp == std::string_view::npos ? rest : rest.substr(0, amp);
+    std::size_t eq = pair.find('=');
+    std::string_view key = eq == std::string_view::npos ? pair : pair.substr(0, eq);
+    if (name == percent_decode(key))
+    {
+      std::string_view value = eq == std::string_view::npos ? std::string_view{} : pair.substr(eq + 1);
+      return percent_decode(value);
+    }
+    if (amp == std::string_view::npos)
+    {
+      break;
+    }
+    rest = rest.substr(amp + 1);
+  }
+  return std::nullopt;
 }
 } // namespace
 
@@ -59,6 +131,16 @@ std::string_view request_t::param(std::string_view name) const
     }
   }
   return {};
+}
+
+std::string request_t::query(std::string_view name) const
+{
+  return find_query(target, name).value_or(std::string{});
+}
+
+bool request_t::has_query(std::string_view name) const
+{
+  return find_query(target, name).has_value();
 }
 
 response_t response_t::text(status_t status, std::string body)

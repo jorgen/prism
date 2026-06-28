@@ -600,3 +600,43 @@ TEST_CASE("a handler can co_await async work via the event loop on request.loop"
     });
   CHECK(rc == 0);
 }
+
+TEST_CASE("query parameters survive the codec and reach the handler")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.get("/echo",
+              [](prism::request_t request) -> vio::task_t<prism::response_t>
+              {
+                co_return prism::response_t::text(prism::status_t::ok, request.query("name"));
+              });
+
+      auto addr = vio::ip4_addr("127.0.0.1", 0);
+      REQUIRE(addr.has_value());
+      auto server = vio::tcp_create_server(loop);
+      REQUIRE(server.has_value());
+      auto bound = vio::tcp_bind(server.value(), reinterpret_cast<const sockaddr *>(&addr.value()));
+      REQUIRE(bound.has_value());
+
+      auto bound_name = vio::sockname(server->tcp);
+      REQUIRE(bound_name.has_value());
+      int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
+
+      vio::cancellation_t cancel;
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, prism::keepalive_options_t{});
+
+      std::string response;
+      co_await run_client(loop, port, "GET /echo?name=ada+lovelace HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response);
+
+      cancel.cancel();
+      auto serve_result = co_await std::move(server_task);
+      CHECK(serve_result.has_value());
+
+      CHECK(response.ends_with("ada lovelace"));
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}

@@ -115,6 +115,12 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
 - **Routing**: `router_t` splits patterns and paths into `/`-segments and matches
   segment by segment; a `{name}` segment captures into `request_t::params`.
   `dispatch` yields 404 (no path match) or 405 (path matches, method doesn't).
+- **Path vs query params**: `{name}` in a pattern captures a path *segment* into
+  `request_t::params` (read via `request.param("name")`) and participates in
+  routing. Query-string parameters are a separate, never-declared concept — read
+  any of them with `request.query("name")` (percent-decoded, `+`→space, returns a
+  `std::string`) or test presence with `request.has_query("name")`. Both scan
+  `request.target` on demand; routing ignores the query string entirely.
 - **Body binding**: request/response bodies are structs with `STFY_OBJ(...)`.
   `json::parse<T>` returns `result_t<T>` (400 on malformed input); `json::respond`
   serializes a struct and sets `Content-Type: application/json`.

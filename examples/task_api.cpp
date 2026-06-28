@@ -91,9 +91,18 @@ vio::task_t<prism::response_t> health(prism::request_t)
   co_return prism::response_t::text(prism::status_t::ok, "ok");
 }
 
-vio::task_t<prism::response_t> list_tasks(std::shared_ptr<store_t> store, prism::request_t)
+vio::task_t<prism::response_t> list_tasks(std::shared_ptr<store_t> store, prism::request_t request)
 {
-  co_return prism::json::respond(prism::status_t::ok, task_list_t{store->tasks});
+  std::string done = request.query("done");
+  task_list_t result;
+  for (const auto &task : store->tasks)
+  {
+    if (done.empty() || (done == "true" && task.done) || (done == "false" && !task.done))
+    {
+      result.tasks.push_back(task);
+    }
+  }
+  co_return prism::json::respond(prism::status_t::ok, result);
 }
 
 vio::task_t<prism::response_t> create_task(std::shared_ptr<store_t> store, prism::request_t request)

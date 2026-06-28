@@ -101,6 +101,8 @@ struct request_t
   vio::event_loop_t *loop = nullptr;
 
   [[nodiscard]] std::string_view param(std::string_view name) const;
+  [[nodiscard]] std::string query(std::string_view name) const;
+  [[nodiscard]] bool has_query(std::string_view name) const;
 };
 
 struct response_t

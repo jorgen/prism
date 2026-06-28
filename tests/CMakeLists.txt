@@ -5,6 +5,7 @@ target_compile_definitions(doctest_main PUBLIC DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_
 add_executable(prism_tests
         json_tests.cpp
         logging_tests.cpp
+        http_tests.cpp
         router_tests.cpp
         http1_tests.cpp
         server_tests.cpp
