@@ -81,8 +81,9 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   - `app.h` / `app.cpp` — `app_t` facade; `listen()` binds a TCP server and
     drives connections through the router. `prism::run(loop, host, port,
     configure, options)` is a coroutine that builds an `app_t`, runs the
-    `configure(app_t&)` callback, and `listen`s — pair it with vio's `VIO_MAIN`
-    macro for a boilerplate-free entry point.
+    `configure(app_t&)` callback, and `listen`s — pair it with vio's
+    `VIO_MAIN(loop, argc, argv)` macro (which generates `main` and forwards the
+    args into a `task_t<int>` coroutine body) for a boilerplate-free entry point.
   - `prism.h` — umbrella header + `version()`.
   - `detail/` — internal, non-installed headers (not on the public surface).
     - `http1.h` / `http1.cpp` — `request_codec_t`, a PIMPL wrapper over llhttp
@@ -97,7 +98,8 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   stops it automatically.
 - `examples/` — `hello_prism.cpp` (minimal) and `task_api.cpp` (an in-memory CRUD
   REST service showing free-function handlers, JSON binding, an async handler, a
-  custom log sink, and the `VIO_MAIN` + `prism::run` entry point).
+  custom log sink, an optional port read from `argv`, and the
+  `VIO_MAIN(loop, argc, argv)` + `prism::run` entry point).
 
 ## Architecture notes
 

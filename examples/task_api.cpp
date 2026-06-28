@@ -194,13 +194,20 @@ void configure(prism::app_t &app)
 }
 } // namespace
 
-VIO_MAIN(loop)
+VIO_MAIN(loop, argc, argv)
 {
-  std::println("prism {} task api on http://127.0.0.1:8080", prism::version());
+  std::uint16_t port = 8080;
+  int parsed = 0;
+  if (argc > 1 && parse_int(argv[1], parsed) && parsed > 0 && parsed <= 65535)
+  {
+    port = static_cast<std::uint16_t>(parsed);
+  }
+
+  std::println("prism {} task api on http://127.0.0.1:{}", prism::version(), port);
 
   prism::keepalive_options_t options;
   options.idle_timeout = std::chrono::seconds{30};
   options.max_connections = 1024;
 
-  co_return co_await prism::run(loop, "127.0.0.1", 8080, configure, options);
+  co_return co_await prism::run(loop, "127.0.0.1", port, configure, options);
 }
