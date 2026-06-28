@@ -1,0 +1,7 @@
+.idea
+.vscode
+cmake-build-*
+build/
+.DS_Store
+compile_commands.json
+/3rdparty/
