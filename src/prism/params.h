@@ -10,6 +10,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <vio/task.h>
 
@@ -260,6 +261,70 @@ handler_t make_typed_handler(Handler handler, Bound... bound)
   constexpr std::size_t bound_count = sizeof...(Bound);
   static_assert(bound_count <= total, "more bound arguments than handler parameters");
   return make_typed_impl<Handler, args_t>(std::move(handler), std::tuple<std::decay_t<Bound>...>(std::move(bound)...), std::make_index_sequence<bound_count>{}, std::make_index_sequence<total - bound_count>{});
+}
+
+template <typename P>
+struct path_param_name_t
+{
+  static constexpr bool present = false;
+};
+template <fixed_string_t Name, typename T>
+struct path_param_name_t<path_t<Name, T>>
+{
+  static constexpr bool present = true;
+  static constexpr std::string_view value = Name.view();
+};
+
+inline bool pattern_declares_param(std::string_view pattern, std::string_view name)
+{
+  std::size_t i = 0;
+  while (i < pattern.size())
+  {
+    if (pattern[i] == '/')
+    {
+      ++i;
+      continue;
+    }
+    std::size_t start = i;
+    while (i < pattern.size() && pattern[i] != '/')
+    {
+      ++i;
+    }
+    std::string_view segment = pattern.substr(start, i - start);
+    if (segment.size() >= 2 && segment.front() == '{' && segment.back() == '}' && segment.substr(1, segment.size() - 2) == name)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+template <typename ArgsTuple, std::size_t Base, std::size_t... ExtractIndex>
+std::optional<std::string> verify_path_params(std::string_view pattern, std::index_sequence<ExtractIndex...>)
+{
+  std::optional<std::string> error;
+  (
+    [&]
+    {
+      using param_t = std::tuple_element_t<Base + ExtractIndex, ArgsTuple>;
+      if constexpr (path_param_name_t<param_t>::present)
+      {
+        if (!error && !pattern_declares_param(pattern, path_param_name_t<param_t>::value))
+        {
+          error = std::string("route '") + std::string(pattern) + "': handler binds path parameter '" + std::string(path_param_name_t<param_t>::value) + "' that the route pattern does not declare";
+        }
+      }
+    }(),
+    ...);
+  return error;
+}
+
+template <typename Handler, std::size_t BoundCount>
+std::optional<std::string> verify_routes(std::string_view pattern)
+{
+  using args_t = typename function_traits_t<std::decay_t<Handler>>::args;
+  constexpr std::size_t total = std::tuple_size_v<args_t>;
+  return verify_path_params<args_t, BoundCount>(pattern, std::make_index_sequence<total - BoundCount>{});
 }
 } // namespace detail
 } // namespace prism

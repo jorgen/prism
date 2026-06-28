@@ -135,6 +135,14 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   default-constructible, and bound state must be copyable (reused per request —
   use a `shared_ptr`). Classic `handler_t` registration is unchanged; the typed
   overload is SFINAE-constrained to non-`handler_t` callables.
+- **Startup route verification**: registering a typed handler checks its
+  compile-time `path_t<"name">` extractors against the runtime pattern; a handler
+  binding a `{name}` the pattern does not declare (e.g. `path_t<"id">` against
+  `"/x/{ide}"`) is recorded in `app_t::route_errors()` and makes `listen()` (and
+  `prism::run`) fail fast with an `internal_server_error` before binding, naming
+  the offending route and parameter. Compile-time verification (pattern as an
+  NTTP / `_route` UDL) is a possible future step; this catches the same typo
+  class on first run / in any test, with no API change.
 - **Body binding**: request/response bodies are structs with `STFY_OBJ(...)`.
   `json::parse<T>` returns `result_t<T>` (400 on malformed input); `json::respond`
   serializes a struct and sets `Content-Type: application/json`.

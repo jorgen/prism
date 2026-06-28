@@ -13,6 +13,15 @@ namespace prism
 {
 vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel, keepalive_options_t options)
 {
+  if (!_route_errors.empty())
+  {
+    for (const auto &route_error : _route_errors)
+    {
+      _logger->log(log_level_t::error, route_error);
+    }
+    co_return fail(status_t::internal_server_error, "route configuration error: " + _route_errors.front());
+  }
+
   std::string bind_host(host.empty() ? std::string_view("0.0.0.0") : host);
 
   auto addr = vio::ip4_addr(bind_host, static_cast<int>(port));

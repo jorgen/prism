@@ -132,3 +132,33 @@ TEST_CASE("typed handler binds leading state arguments")
     });
   CHECK(rc == 0);
 }
+
+TEST_CASE("route registration flags a handler binding an undeclared path parameter")
+{
+  prism::app_t app;
+  app.get("/things/{id}", show);
+  app.get("/people/{name}", greet, std::make_shared<std::string>("hi "));
+  CHECK(app.route_errors().empty());
+
+  app.get("/widgets/{wid}", show);
+  REQUIRE(app.route_errors().size() == 1);
+  CHECK(app.route_errors().front().find("'id'") != std::string::npos);
+  CHECK(app.route_errors().front().find("/widgets/{wid}") != std::string::npos);
+}
+
+TEST_CASE("listen fails fast on a route configuration error")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.get("/widgets/{wid}", show);
+
+      auto result = co_await app.listen(loop, "127.0.0.1", 0);
+      CHECK_FALSE(result.has_value());
+      CHECK(result.error().code == prism::status_t::internal_server_error);
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}

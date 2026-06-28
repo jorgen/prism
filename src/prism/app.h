@@ -4,9 +4,12 @@
 #include <exception> // vio/task.h uses std::terminate without including this
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <vio/task.h>
 
@@ -55,36 +58,46 @@ public:
     requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
   void get(std::string_view pattern, Handler &&handler, Bound &&...bound)
   {
+    record_route_error(detail::verify_routes<std::decay_t<Handler>, sizeof...(Bound)>(pattern));
     _router.get(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
   }
   template <typename Handler, typename... Bound>
     requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
   void post(std::string_view pattern, Handler &&handler, Bound &&...bound)
   {
+    record_route_error(detail::verify_routes<std::decay_t<Handler>, sizeof...(Bound)>(pattern));
     _router.post(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
   }
   template <typename Handler, typename... Bound>
     requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
   void put(std::string_view pattern, Handler &&handler, Bound &&...bound)
   {
+    record_route_error(detail::verify_routes<std::decay_t<Handler>, sizeof...(Bound)>(pattern));
     _router.put(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
   }
   template <typename Handler, typename... Bound>
     requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
   void patch(std::string_view pattern, Handler &&handler, Bound &&...bound)
   {
+    record_route_error(detail::verify_routes<std::decay_t<Handler>, sizeof...(Bound)>(pattern));
     _router.patch(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
   }
   template <typename Handler, typename... Bound>
     requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
   void del(std::string_view pattern, Handler &&handler, Bound &&...bound)
   {
+    record_route_error(detail::verify_routes<std::decay_t<Handler>, sizeof...(Bound)>(pattern));
     _router.del(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
   }
 
   [[nodiscard]] const router_t &router() const
   {
     return _router;
+  }
+
+  [[nodiscard]] const std::vector<std::string> &route_errors() const
+  {
+    return _route_errors;
   }
 
   [[nodiscard]] logger_t &logger()
@@ -110,8 +123,17 @@ public:
   [[nodiscard]] vio::task_t<result_t<void>> listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel = nullptr, keepalive_options_t options = {});
 
 private:
+  void record_route_error(std::optional<std::string> error)
+  {
+    if (error)
+    {
+      _route_errors.push_back(std::move(*error));
+    }
+  }
+
   router_t _router;
   std::shared_ptr<logger_t> _logger = std::make_shared<logger_t>();
+  std::vector<std::string> _route_errors;
 };
 
 [[nodiscard]] vio::task_t<int> run(vio::event_loop_t &loop, std::string_view host, uint16_t port, std::function<void(app_t &)> configure, keepalive_options_t options = {});
