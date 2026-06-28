@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <vio/cancellation.h>
@@ -27,6 +28,14 @@ enum class read_outcome_t : std::uint8_t
   timed_out,
   error,
 };
+
+void emit(const std::shared_ptr<const logger_t> &logger, log_level_t level, std::string_view message)
+{
+  if (logger && logger->enabled(level))
+  {
+    logger->log(level, message);
+  }
+}
 
 vio::task_t<read_outcome_t> read_with_timeout(vio::event_loop_t &loop, vio::tcp_reader_t &reader, std::chrono::milliseconds timeout, vio::unique_buf_t &out)
 {
@@ -118,7 +127,7 @@ vio::task_t<write_outcome_t> write_with_timeout(vio::event_loop_t &loop, vio::tc
 }
 } // namespace
 
-vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const router_t> router, keepalive_options_t options)
+vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, keepalive_options_t options)
 {
   auto reader_or_error = vio::tcp_create_reader(client);
   if (!reader_or_error.has_value())
@@ -155,6 +164,7 @@ vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const rout
           auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
           if (remaining <= std::chrono::milliseconds::zero())
           {
+            emit(logger, log_level_t::warn, body_phase ? "request body timeout; closing connection" : "request header timeout; closing connection");
             co_return;
           }
           timeout = remaining;
@@ -173,6 +183,7 @@ vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const rout
         if (codec.feed(buffer->base, buffer->len) == feed_result_t::error)
         {
           status_t status = codec.error_status();
+          emit(logger, log_level_t::warn, "malformed request -> " + std::to_string(static_cast<int>(status)));
           std::string wire = serialize_response(response_t::text(status, std::string(reason_phrase(status))), false, false);
           co_await write_with_timeout(loop, client, std::move(wire), options.write_timeout);
           co_return;
@@ -190,6 +201,21 @@ vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const rout
         ended = true;
         break;
       }
+      if (outcome == read_outcome_t::timed_out)
+      {
+        if (request_started)
+        {
+          emit(logger, log_level_t::warn, body_phase ? "request body timeout; closing connection" : "request header timeout; closing connection");
+        }
+        else
+        {
+          emit(logger, log_level_t::debug, "idle connection closed");
+        }
+      }
+      else
+      {
+        emit(logger, log_level_t::debug, "read error; closing connection");
+      }
       co_return;
     }
 
@@ -204,9 +230,46 @@ vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const rout
     bool server_close = options.max_requests != 0 && served >= options.max_requests;
     bool keep_alive = pending.keep_alive && !server_close;
 
+    const bool access = logger && logger->enabled(log_level_t::info);
+    method_t request_method = pending.request.method;
+    std::string request_path;
+    if (access)
+    {
+      request_path = pending.request.path;
+    }
+    auto started_at = std::chrono::steady_clock::now();
+
     response_t response = co_await router->dispatch(std::move(pending.request));
     std::string wire = serialize_response(response, keep_alive, head_request);
     auto outcome = co_await write_with_timeout(loop, client, std::move(wire), options.write_timeout);
+
+    if (outcome == write_outcome_t::ok)
+    {
+      if (access)
+      {
+        auto micros = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started_at).count();
+        std::string line;
+        line.reserve(64);
+        line += method_name(request_method);
+        line += ' ';
+        line += request_path;
+        line += ' ';
+        line += std::to_string(static_cast<int>(response.status));
+        line += ' ';
+        line += std::to_string(micros);
+        line += "us";
+        logger->log(log_level_t::info, line);
+      }
+    }
+    else if (outcome == write_outcome_t::timed_out)
+    {
+      emit(logger, log_level_t::warn, "response write timeout; closing connection");
+    }
+    else
+    {
+      emit(logger, log_level_t::warn, "response write failed; closing connection");
+    }
+
     if (outcome != write_outcome_t::ok || !keep_alive)
     {
       co_return;
@@ -214,7 +277,7 @@ vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const rout
   }
 }
 
-vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<const router_t> router, vio::cancellation_t *cancel, keepalive_options_t options)
+vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, vio::cancellation_t *cancel, keepalive_options_t options)
 {
   auto active = std::make_shared<std::size_t>(0);
   for (;;)
@@ -224,8 +287,10 @@ vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<cons
     {
       if (cancel != nullptr && vio::is_cancelled(listen_result.error()))
       {
+        emit(logger, log_level_t::info, "server stopped");
         co_return result_t<void>{};
       }
+      emit(logger, log_level_t::error, "accept loop stopped: " + listen_result.error().msg);
       co_return fail(status_t::internal_server_error, "tcp_listen: " + listen_result.error().msg);
     }
 
@@ -238,15 +303,17 @@ vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<cons
 
     if (options.max_connections != 0 && *active >= options.max_connections)
     {
+      emit(logger, log_level_t::warn, "connection rejected: max_connections reached");
       continue;
     }
 
     ++(*active);
-    [](vio::tcp_t connection, std::shared_ptr<const router_t> routes, keepalive_options_t opts, std::shared_ptr<std::size_t> count) -> vio::detached_task_t
+    emit(logger, log_level_t::debug, "connection accepted");
+    [](vio::tcp_t connection, std::shared_ptr<const router_t> routes, std::shared_ptr<const logger_t> log, keepalive_options_t opts, std::shared_ptr<std::size_t> count) -> vio::detached_task_t
     {
-      co_await serve_connection(std::move(connection), std::move(routes), opts);
+      co_await serve_connection(std::move(connection), std::move(routes), std::move(log), opts);
       --(*count);
-    }(std::move(client.value()), router, options, active);
+    }(std::move(client.value()), router, logger, options, active);
   }
 }
 } // namespace prism::detail

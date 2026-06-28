@@ -4,12 +4,14 @@ set(public_headers
         prism/error.h
         prism/http.h
         prism/json.h
+        prism/logging.h
         prism/router.h
         prism/app.h
         prism/server_options.h
 )
 set(sources
         prism/http.cpp
+        prism/logging.cpp
         prism/router.cpp
         prism/app.cpp
         prism/version.cpp

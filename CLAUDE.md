@@ -73,6 +73,9 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   - `error.h` — `error_t`, `result_t`, `fail()`.
   - `http.h` / `http.cpp` — `method_t`, `headers_t`, `request_t`, `response_t`.
   - `json.h` — structify glue: `serialize`, `parse`, `respond`.
+  - `logging.h` / `logging.cpp` — `log_level_t`, `log_sink_t`
+    (`std::function<void(log_level_t, std::string_view)>`), `logger_t`, and
+    `default_stdout_sink`.
   - `router.h` / `router.cpp` — `handler_t`, `router_t` (segment matching,
     `{param}` capture, `dispatch`).
   - `app.h` / `app.cpp` — `app_t` facade; `listen()` binds a TCP server and
@@ -145,6 +148,24 @@ duration. prism `std::move`s the serialized `wire` into vio's owning
 prism's freed buffer, and without a copy. Routing state is shared via
 `std::shared_ptr<const router_t>` (a copy of the router taken at `listen`), so
 in-flight connection coroutines keep it alive even if the `app_t` is destroyed.
+
+### Logging
+
+Logging is a pluggable, per-app facade (`logging.h`). `app_t` owns a
+`std::shared_ptr<logger_t>` (default-constructed with `default_stdout_sink`);
+configure it via `app.logger().set_sink(...)` / `set_level(...)` before
+`listen`, or replace it wholesale with `app.set_logger(...)`. A `log_sink_t` is
+just `std::function<void(log_level_t, std::string_view)>`, so bridging to spdlog
+/ glog / etc. is a one-line lambda; the default sink writes `timestamp [LEVEL]
+message` to stdout (warn/error to stderr) and **fflushes each line** so logs
+survive a crash. `logger_t::enabled(level)` gates formatting, and the per-request
+access line is only built when `info` is enabled. The logger rides into the
+connection coroutines as `std::shared_ptr<const logger_t>` exactly like the
+router (`serve`/`serve_connection` take it; a null logger means silent — tests
+pass `nullptr`). prism logs: `listen` start / stop and bind failures
+(info/error), one access line per request (`info`: `METHOD path status NNNus`),
+malformed requests / header-body-write timeouts / `max_connections` sheds
+(`warn`), and connection accept / idle-close / read-error (`debug`).
 
 ### Hardening backlog
 

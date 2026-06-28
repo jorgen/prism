@@ -2,12 +2,14 @@
 
 #include <cstdint>
 #include <exception> // vio/task.h uses std::terminate without including this
+#include <memory>
 #include <string_view>
 #include <utility>
 
 #include <vio/task.h>
 
 #include "error.h"
+#include "logging.h"
 #include "router.h"
 #include "server_options.h"
 
@@ -51,6 +53,19 @@ public:
     return _router;
   }
 
+  [[nodiscard]] logger_t &logger()
+  {
+    return *_logger;
+  }
+  [[nodiscard]] const logger_t &logger() const
+  {
+    return *_logger;
+  }
+  void set_logger(std::shared_ptr<logger_t> logger)
+  {
+    _logger = std::move(logger);
+  }
+
   // Run a single request through the router. Useful for tests and for
   // embedding prism behind another transport.
   [[nodiscard]] vio::task_t<response_t> handle(request_t request) const
@@ -62,5 +77,6 @@ public:
 
 private:
   router_t _router;
+  std::shared_ptr<logger_t> _logger = std::make_shared<logger_t>();
 };
 } // namespace prism

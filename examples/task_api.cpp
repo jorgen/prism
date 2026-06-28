@@ -1,6 +1,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <print>
 #include <string>
@@ -97,6 +98,14 @@ int main()
     {
       auto store = std::make_shared<store_t>();
       prism::app_t app;
+
+      app.logger().set_level(prism::log_level_t::debug);
+      app.logger().set_sink(
+        [](prism::log_level_t level, std::string_view message)
+        {
+          std::println("[task-api] {} {}", prism::log_level_name(level), message);
+          std::fflush(stdout);
+        });
 
       app.get("/health",
               [](prism::request_t) -> vio::task_t<prism::response_t>

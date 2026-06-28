@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -87,7 +88,7 @@ vio::task_t<std::string> run_case(vio::event_loop_t &loop, prism::keepalive_opti
   int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
 
   vio::cancellation_t cancel;
-  auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), &cancel, options);
+  auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, options);
 
   std::string response;
   co_await run_client(loop, port, std::move(request), response);
@@ -306,7 +307,7 @@ TEST_CASE("a large response is delivered through the write-timeout path")
       prism::keepalive_options_t options;
       options.write_timeout = std::chrono::seconds{5};
       vio::cancellation_t cancel;
-      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), &cancel, options);
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, options);
 
       std::string response;
       co_await run_client(loop, port, "GET /big HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response);
@@ -391,7 +392,7 @@ TEST_CASE("max_connections sheds connections beyond the cap")
       options.max_connections = 1;
       options.idle_timeout = std::chrono::seconds{30};
       vio::cancellation_t cancel;
-      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), &cancel, options);
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, options);
 
       auto holder = hold_then_close(loop, port, std::chrono::milliseconds{400});
 
@@ -493,6 +494,65 @@ TEST_CASE("vio::write_tcp takes ownership of a moved std::vector on the cancella
 
       CHECK(delivered);
       CHECK(*received == expected);
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("the server emits an access log line per request through the logger")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.get("/ping",
+              [](prism::request_t) -> vio::task_t<prism::response_t>
+              {
+                co_return prism::response_t::text(prism::status_t::ok, "pong");
+              });
+
+      auto addr = vio::ip4_addr("127.0.0.1", 0);
+      REQUIRE(addr.has_value());
+      auto server = vio::tcp_create_server(loop);
+      REQUIRE(server.has_value());
+      auto bound = vio::tcp_bind(server.value(), reinterpret_cast<const sockaddr *>(&addr.value()));
+      REQUIRE(bound.has_value());
+
+      auto bound_name = vio::sockname(server->tcp);
+      REQUIRE(bound_name.has_value());
+      int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
+
+      auto lines = std::make_shared<std::vector<std::string>>();
+      auto logger = std::make_shared<prism::logger_t>();
+      logger->set_sink(
+        [lines](prism::log_level_t level, std::string_view message)
+        {
+          if (level == prism::log_level_t::info)
+          {
+            lines->emplace_back(message);
+          }
+        });
+
+      vio::cancellation_t cancel;
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), logger, &cancel, prism::keepalive_options_t{});
+
+      std::string response;
+      co_await run_client(loop, port, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response);
+
+      cancel.cancel();
+      auto serve_result = co_await std::move(server_task);
+      CHECK(serve_result.has_value());
+
+      bool found = false;
+      for (const auto &line : *lines)
+      {
+        if (line.rfind("GET /ping 200", 0) == 0)
+        {
+          found = true;
+        }
+      }
+      CHECK(found);
 
       co_return 0;
     });
