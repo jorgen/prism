@@ -273,9 +273,10 @@ struct path_param_name_t<path_t<Name, T>>
 {
   static constexpr bool present = true;
   static constexpr std::string_view value = Name.view();
+  static constexpr auto name = Name;
 };
 
-inline bool pattern_declares_param(std::string_view pattern, std::string_view name)
+constexpr bool pattern_declares_param(std::string_view pattern, std::string_view name)
 {
   std::size_t i = 0;
   while (i < pattern.size())
@@ -325,6 +326,35 @@ std::optional<std::string> verify_routes(std::string_view pattern)
   using args_t = typename function_traits_t<std::decay_t<Handler>>::args;
   constexpr std::size_t total = std::tuple_size_v<args_t>;
   return verify_path_params<args_t, BoundCount>(pattern, std::make_index_sequence<total - BoundCount>{});
+}
+
+template <fixed_string_t Pattern, fixed_string_t Name>
+struct require_declared_param_t
+{
+  static_assert(pattern_declares_param(Pattern.view(), Name.view()), "static route verification: this handler binds a path_t<\"name\"> parameter that the route pattern does not declare");
+};
+
+template <fixed_string_t Pattern, typename P>
+constexpr void verify_one_static()
+{
+  if constexpr (path_param_name_t<P>::present)
+  {
+    (void)require_declared_param_t<Pattern, path_param_name_t<P>::name>{};
+  }
+}
+
+template <fixed_string_t Pattern, typename ArgsTuple, std::size_t Base, std::size_t... ExtractIndex>
+constexpr void verify_path_params_static(std::index_sequence<ExtractIndex...>)
+{
+  (verify_one_static<Pattern, std::tuple_element_t<Base + ExtractIndex, ArgsTuple>>(), ...);
+}
+
+template <fixed_string_t Pattern, typename Handler, std::size_t BoundCount>
+constexpr void verify_routes_static()
+{
+  using args_t = typename function_traits_t<std::decay_t<Handler>>::args;
+  constexpr std::size_t total = std::tuple_size_v<args_t>;
+  verify_path_params_static<Pattern, args_t, BoundCount>(std::make_index_sequence<total - BoundCount>{});
 }
 } // namespace detail
 } // namespace prism

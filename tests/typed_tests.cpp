@@ -146,6 +146,28 @@ TEST_CASE("route registration flags a handler binding an undeclared path paramet
   CHECK(app.route_errors().front().find("/widgets/{wid}") != std::string::npos);
 }
 
+TEST_CASE("a statically verified route parses and dispatches")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.get<"/things/{id}">(show);
+      app.get<"/hi/{name}">(greet, std::make_shared<std::string>("hello "));
+
+      auto a = co_await app.handle(make_request(prism::method_t::get, "/things/42"));
+      CHECK(a.body == "id=42");
+
+      auto b = co_await app.handle(make_request(prism::method_t::get, "/hi/ada"));
+      CHECK(b.body == "hello ada");
+
+      CHECK(app.route_errors().empty());
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
 TEST_CASE("listen fails fast on a route configuration error")
 {
   int rc = vio::run(

@@ -99,10 +99,18 @@ app.get("/tasks",      list_tasks, store);
 ```
 
 Parsing goes through the `param_codec_t<T>` customization point (integral, bool,
-and `std::string` built in — specialize it for your own types). Registering a
-typed handler also **verifies the route at startup**: a handler binding
-`path_t<"id">` against a `"/tasks/{ide}"` typo is reported by
-`app.route_errors()` and makes `listen()` fail fast before binding.
+and `std::string` built in — specialize it for your own types).
+
+Routes are **verified** against the handler's `path_t<>` extractors. The runtime
+form checks at startup — a handler binding `path_t<"id">` against a
+`"/tasks/{ide}"` typo is reported by `app.route_errors()` and makes `listen()`
+fail fast before binding. Or opt into **compile-time** verification by passing the
+pattern as a template argument — the same typo is then a build error:
+
+```cpp
+app.get("/tasks/{id}", get_task, store);    // runtime: verified at startup; can register after listen()
+app.get<"/tasks/{id}">(get_task, store);    // static:  verified at compile time
+```
 
 ### The raw form
 

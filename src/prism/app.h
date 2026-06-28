@@ -90,6 +90,42 @@ public:
     _router.del(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
   }
 
+  template <fixed_string_t Pattern, typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void get(Handler &&handler, Bound &&...bound)
+  {
+    detail::verify_routes_static<Pattern, std::decay_t<Handler>, sizeof...(Bound)>();
+    _router.get(Pattern.view(), detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+  template <fixed_string_t Pattern, typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void post(Handler &&handler, Bound &&...bound)
+  {
+    detail::verify_routes_static<Pattern, std::decay_t<Handler>, sizeof...(Bound)>();
+    _router.post(Pattern.view(), detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+  template <fixed_string_t Pattern, typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void put(Handler &&handler, Bound &&...bound)
+  {
+    detail::verify_routes_static<Pattern, std::decay_t<Handler>, sizeof...(Bound)>();
+    _router.put(Pattern.view(), detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+  template <fixed_string_t Pattern, typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void patch(Handler &&handler, Bound &&...bound)
+  {
+    detail::verify_routes_static<Pattern, std::decay_t<Handler>, sizeof...(Bound)>();
+    _router.patch(Pattern.view(), detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+  template <fixed_string_t Pattern, typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void del(Handler &&handler, Bound &&...bound)
+  {
+    detail::verify_routes_static<Pattern, std::decay_t<Handler>, sizeof...(Bound)>();
+    _router.del(Pattern.view(), detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+
   [[nodiscard]] const router_t &router() const
   {
     return _router;

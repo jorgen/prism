@@ -140,9 +140,17 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   binding a `{name}` the pattern does not declare (e.g. `path_t<"id">` against
   `"/x/{ide}"`) is recorded in `app_t::route_errors()` and makes `listen()` (and
   `prism::run`) fail fast with an `internal_server_error` before binding, naming
-  the offending route and parameter. Compile-time verification (pattern as an
-  NTTP / `_route` UDL) is a possible future step; this catches the same typo
-  class on first run / in any test, with no API change.
+  the offending route and parameter.
+- **Static (compile-time) route verification** (opt-in): registering with the
+  pattern as an NTTP — `app.get<"/tasks/{id}">(handler, state...)` — runs the same
+  `path_t` ↔ `{name}` check via a `constexpr pattern_declares_param` +
+  `static_assert` (`detail::verify_routes_static`), so a mismatch is a **build
+  error** that names the route and parameter (through the
+  `require_declared_param_t<Pattern, Name>` instantiation). It coexists with the
+  runtime form: `get<Pattern>(...)` (explicit NTTP) selects the static overload;
+  `get(pattern, ...)` (runtime `string_view`) selects the runtime one, which can
+  still register after `listen` has started. Both are constrained to non-`handler_t`
+  callables.
 - **Body binding**: request/response bodies are structs with `STFY_OBJ(...)`.
   `json::parse<T>` returns `result_t<T>` (400 on malformed input); `json::respond`
   serializes a struct and sets `Content-Type: application/json`.
