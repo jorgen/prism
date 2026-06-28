@@ -7,6 +7,11 @@
 
 #include "status.h"
 
+namespace vio
+{
+class event_loop_t;
+}
+
 namespace prism
 {
 enum class method_t : uint8_t
@@ -92,6 +97,8 @@ struct request_t
 
   // Path parameters captured by the router, e.g. {"id": "42"} for "/users/{id}".
   std::vector<header_t> params;
+
+  vio::event_loop_t *loop = nullptr;
 
   [[nodiscard]] std::string_view param(std::string_view name) const;
 };

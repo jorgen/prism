@@ -240,6 +240,7 @@ vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const rout
       started_at = std::chrono::steady_clock::now();
     }
 
+    pending.request.loop = &loop;
     response_t response = co_await router->dispatch(std::move(pending.request));
     std::string wire = serialize_response(response, keep_alive, head_request);
     auto outcome = co_await write_with_timeout(loop, client, std::move(wire), options.write_timeout);

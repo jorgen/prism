@@ -39,4 +39,15 @@ vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_v
   _logger->log(log_level_t::info, "listening on " + bind_host + ":" + std::to_string(port));
   co_return co_await prism::detail::serve(std::move(server.value()), std::make_shared<const router_t>(_router), _logger, cancel, options);
 }
+
+vio::task_t<int> run(vio::event_loop_t &loop, std::string_view host, uint16_t port, std::function<void(app_t &)> configure, keepalive_options_t options)
+{
+  app_t app;
+  if (configure)
+  {
+    configure(app);
+  }
+  auto result = co_await app.listen(loop, host, port, nullptr, options);
+  co_return result.has_value() ? 0 : 1;
+}
 } // namespace prism

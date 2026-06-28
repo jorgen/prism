@@ -79,7 +79,10 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   - `router.h` / `router.cpp` — `handler_t`, `router_t` (segment matching,
     `{param}` capture, `dispatch`).
   - `app.h` / `app.cpp` — `app_t` facade; `listen()` binds a TCP server and
-    drives connections through the router.
+    drives connections through the router. `prism::run(loop, host, port,
+    configure, options)` is a coroutine that builds an `app_t`, runs the
+    `configure(app_t&)` callback, and `listen`s — pair it with vio's `VIO_MAIN`
+    macro for a boilerplate-free entry point.
   - `prism.h` — umbrella header + `version()`.
   - `detail/` — internal, non-installed headers (not on the public surface).
     - `http1.h` / `http1.cpp` — `request_codec_t`, a PIMPL wrapper over llhttp
@@ -92,12 +95,21 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
 - `tests/` — doctest (`DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS`).
   Coroutine handlers are exercised via `vio::run`, which runs the event loop and
   stops it automatically.
-- `examples/` — `hello_prism.cpp`.
+- `examples/` — `hello_prism.cpp` (minimal) and `task_api.cpp` (an in-memory CRUD
+  REST service showing free-function handlers, JSON binding, an async handler, a
+  custom log sink, and the `VIO_MAIN` + `prism::run` entry point).
 
 ## Architecture notes
 
 - **Handlers are coroutines**: `handler_t = std::function<vio::task_t<response_t>(request_t)>`.
   Because they return `task_t`, a handler can `co_await` any async vio operation.
+  The event loop is reachable as `request_t::loop` (set by the server before
+  dispatch), so a handler can `co_await vio::sleep(*request.loop, …)` without
+  capturing it. Prefer **free-function coroutines that take their dependencies by
+  parameter** (registered with `std::bind_front(fn, deps...)`) over capturing
+  coroutine lambdas — a coroutine lambda's captures live in the closure, which is
+  the vio dangling-`this` footgun; a free function takes its state into the frame
+  by value.
 - **Routing**: `router_t` splits patterns and paths into `/`-segments and matches
   segment by segment; a `{name}` segment captures into `request_t::params`.
   `dispatch` yields 404 (no path match) or 405 (path matches, method doesn't).

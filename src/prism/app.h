@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <exception> // vio/task.h uses std::terminate without including this
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -79,4 +80,6 @@ private:
   router_t _router;
   std::shared_ptr<logger_t> _logger = std::make_shared<logger_t>();
 };
+
+[[nodiscard]] vio::task_t<int> run(vio::event_loop_t &loop, std::string_view host, uint16_t port, std::function<void(app_t &)> configure, keepalive_options_t options = {});
 } // namespace prism

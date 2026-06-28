@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <print>
 #include <string>
@@ -9,8 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include <prism/app.h>
-#include <prism/json.h>
 #include <prism/prism.h>
 
 #include <vio/operation/sleep.h>
@@ -80,141 +79,128 @@ task_item_t *find_task(store_t &store, int id)
   }
   return nullptr;
 }
+
+void log_line(prism::log_level_t level, std::string_view message)
+{
+  std::println("[task-api] {} {}", prism::log_level_name(level), message);
+  std::fflush(stdout);
+}
+
+vio::task_t<prism::response_t> health(prism::request_t)
+{
+  co_return prism::response_t::text(prism::status_t::ok, "ok");
+}
+
+vio::task_t<prism::response_t> list_tasks(std::shared_ptr<store_t> store, prism::request_t)
+{
+  co_return prism::json::respond(prism::status_t::ok, task_list_t{store->tasks});
+}
+
+vio::task_t<prism::response_t> create_task(std::shared_ptr<store_t> store, prism::request_t request)
+{
+  auto body = prism::json::parse<task_create_t>(request.body);
+  if (!body.has_value())
+  {
+    co_return error_response(body.error().code, body.error().msg);
+  }
+  if (body->title.empty())
+  {
+    co_return error_response(prism::status_t::unprocessable_entity, "title must not be empty");
+  }
+  task_item_t created{store->next_id++, std::move(body->title), false};
+  store->tasks.push_back(created);
+  co_return prism::json::respond(prism::status_t::created, created);
+}
+
+vio::task_t<prism::response_t> get_task(std::shared_ptr<store_t> store, prism::request_t request)
+{
+  int id = 0;
+  if (!parse_int(request.param("id"), id))
+  {
+    co_return error_response(prism::status_t::bad_request, "invalid task id");
+  }
+  if (task_item_t *task = find_task(*store, id))
+  {
+    co_return prism::json::respond(prism::status_t::ok, *task);
+  }
+  co_return error_response(prism::status_t::not_found, "task not found");
+}
+
+vio::task_t<prism::response_t> update_task(std::shared_ptr<store_t> store, prism::request_t request)
+{
+  int id = 0;
+  if (!parse_int(request.param("id"), id))
+  {
+    co_return error_response(prism::status_t::bad_request, "invalid task id");
+  }
+  auto body = prism::json::parse<task_update_t>(request.body);
+  if (!body.has_value())
+  {
+    co_return error_response(body.error().code, body.error().msg);
+  }
+  task_item_t *task = find_task(*store, id);
+  if (task == nullptr)
+  {
+    co_return error_response(prism::status_t::not_found, "task not found");
+  }
+  task->title = std::move(body->title);
+  task->done = body->done;
+  co_return prism::json::respond(prism::status_t::ok, *task);
+}
+
+vio::task_t<prism::response_t> remove_task(std::shared_ptr<store_t> store, prism::request_t request)
+{
+  int id = 0;
+  if (!parse_int(request.param("id"), id))
+  {
+    co_return error_response(prism::status_t::bad_request, "invalid task id");
+  }
+  for (auto it = store->tasks.begin(); it != store->tasks.end(); ++it)
+  {
+    if (it->id == id)
+    {
+      store->tasks.erase(it);
+      co_return prism::response_t::text(prism::status_t::no_content, "");
+    }
+  }
+  co_return error_response(prism::status_t::not_found, "task not found");
+}
+
+vio::task_t<prism::response_t> slow(prism::request_t request)
+{
+  int ms = 0;
+  if (!parse_int(request.param("ms"), ms))
+  {
+    co_return error_response(prism::status_t::bad_request, "invalid duration");
+  }
+  co_await vio::sleep(*request.loop, std::chrono::milliseconds{ms});
+  co_return prism::response_t::text(prism::status_t::ok, "slept " + std::to_string(ms) + "ms");
+}
+
+void configure(prism::app_t &app)
+{
+  auto store = std::make_shared<store_t>();
+
+  app.logger().set_level(prism::log_level_t::debug);
+  app.logger().set_sink(log_line);
+
+  app.get("/health", health);
+  app.get("/tasks", std::bind_front(list_tasks, store));
+  app.post("/tasks", std::bind_front(create_task, store));
+  app.get("/tasks/{id}", std::bind_front(get_task, store));
+  app.put("/tasks/{id}", std::bind_front(update_task, store));
+  app.del("/tasks/{id}", std::bind_front(remove_task, store));
+  app.get("/slow/{ms}", slow);
+}
 } // namespace
 
-int main()
+VIO_MAIN(loop)
 {
   std::println("prism {} task api on http://127.0.0.1:8080", prism::version());
-  std::println("  GET    /health");
-  std::println("  GET    /tasks");
-  std::println("  POST   /tasks            {{\"title\":\"...\"}}");
-  std::println("  GET    /tasks/{{id}}");
-  std::println("  PUT    /tasks/{{id}}       {{\"title\":\"...\",\"done\":true}}");
-  std::println("  DELETE /tasks/{{id}}");
-  std::println("  GET    /slow/{{ms}}");
 
-  return vio::run(
-    [](vio::event_loop_t &loop) -> vio::task_t<int>
-    {
-      auto store = std::make_shared<store_t>();
-      prism::app_t app;
+  prism::keepalive_options_t options;
+  options.idle_timeout = std::chrono::seconds{30};
+  options.max_connections = 1024;
 
-      app.logger().set_level(prism::log_level_t::debug);
-      app.logger().set_sink(
-        [](prism::log_level_t level, std::string_view message)
-        {
-          std::println("[task-api] {} {}", prism::log_level_name(level), message);
-          std::fflush(stdout);
-        });
-
-      app.get("/health",
-              [](prism::request_t) -> vio::task_t<prism::response_t>
-              {
-                co_return prism::response_t::text(prism::status_t::ok, "ok");
-              });
-
-      app.get("/tasks",
-              [store](prism::request_t) -> vio::task_t<prism::response_t>
-              {
-                co_return prism::json::respond(prism::status_t::ok, task_list_t{store->tasks});
-              });
-
-      app.post("/tasks",
-               [store](prism::request_t request) -> vio::task_t<prism::response_t>
-               {
-                 auto body = prism::json::parse<task_create_t>(request.body);
-                 if (!body.has_value())
-                 {
-                   co_return error_response(body.error().code, body.error().msg);
-                 }
-                 if (body->title.empty())
-                 {
-                   co_return error_response(prism::status_t::unprocessable_entity, "title must not be empty");
-                 }
-                 task_item_t created{store->next_id++, std::move(body->title), false};
-                 store->tasks.push_back(created);
-                 co_return prism::json::respond(prism::status_t::created, created);
-               });
-
-      app.get("/tasks/{id}",
-              [store](prism::request_t request) -> vio::task_t<prism::response_t>
-              {
-                int id = 0;
-                if (!parse_int(request.param("id"), id))
-                {
-                  co_return error_response(prism::status_t::bad_request, "invalid task id");
-                }
-                if (task_item_t *task = find_task(*store, id))
-                {
-                  co_return prism::json::respond(prism::status_t::ok, *task);
-                }
-                co_return error_response(prism::status_t::not_found, "task not found");
-              });
-
-      app.put("/tasks/{id}",
-              [store](prism::request_t request) -> vio::task_t<prism::response_t>
-              {
-                int id = 0;
-                if (!parse_int(request.param("id"), id))
-                {
-                  co_return error_response(prism::status_t::bad_request, "invalid task id");
-                }
-                auto body = prism::json::parse<task_update_t>(request.body);
-                if (!body.has_value())
-                {
-                  co_return error_response(body.error().code, body.error().msg);
-                }
-                task_item_t *task = find_task(*store, id);
-                if (task == nullptr)
-                {
-                  co_return error_response(prism::status_t::not_found, "task not found");
-                }
-                task->title = std::move(body->title);
-                task->done = body->done;
-                co_return prism::json::respond(prism::status_t::ok, *task);
-              });
-
-      app.del("/tasks/{id}",
-              [store](prism::request_t request) -> vio::task_t<prism::response_t>
-              {
-                int id = 0;
-                if (!parse_int(request.param("id"), id))
-                {
-                  co_return error_response(prism::status_t::bad_request, "invalid task id");
-                }
-                for (auto it = store->tasks.begin(); it != store->tasks.end(); ++it)
-                {
-                  if (it->id == id)
-                  {
-                    store->tasks.erase(it);
-                    co_return prism::response_t::text(prism::status_t::no_content, "");
-                  }
-                }
-                co_return error_response(prism::status_t::not_found, "task not found");
-              });
-
-      app.get("/slow/{ms}",
-              [&loop](prism::request_t request) -> vio::task_t<prism::response_t>
-              {
-                int ms = 0;
-                if (!parse_int(request.param("ms"), ms))
-                {
-                  co_return error_response(prism::status_t::bad_request, "invalid duration");
-                }
-                co_await vio::sleep(loop, std::chrono::milliseconds{ms});
-                co_return prism::response_t::text(prism::status_t::ok, "slept " + std::to_string(ms) + "ms");
-              });
-
-      prism::keepalive_options_t options;
-      options.idle_timeout = std::chrono::seconds{30};
-      options.max_connections = 1024;
-
-      auto result = co_await app.listen(loop, "127.0.0.1", 8080, nullptr, options);
-      if (!result.has_value())
-      {
-        std::println(stderr, "listen failed: {}", result.error().msg);
-        co_return 1;
-      }
-      co_return 0;
-    });
+  co_return co_await prism::run(loop, "127.0.0.1", 8080, configure, options);
 }
