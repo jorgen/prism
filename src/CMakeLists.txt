@@ -5,6 +5,7 @@ set(public_headers
         prism/http.h
         prism/json.h
         prism/logging.h
+        prism/params.h
         prism/router.h
         prism/app.h
         prism/server_options.h

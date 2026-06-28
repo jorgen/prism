@@ -121,6 +121,20 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   any of them with `request.query("name")` (percent-decoded, `+`→space, returns a
   `std::string`) or test presence with `request.has_query("name")`. Both scan
   `request.target` on demand; routing ignores the query string entirely.
+- **Typed handlers** (`params.h`): instead of taking `request_t` and parsing by
+  hand, a handler can take typed extractors and register with
+  `app.get(pattern, handler, bound_state...)` — `path_t<"id", int>`,
+  `query_t<"q", std::optional<int>>` (optional ⇒ absent is allowed; non-optional
+  ⇒ 400 when missing), `body_t<T>` (JSON via structify), and plain `request_t`
+  for raw access (e.g. `request.loop`). The registration adapter parses each via
+  the `param_codec_t<T>` customization point (built-ins for integral / bool /
+  `std::string`; specialize it for your own types) and returns **400 before the
+  handler runs** on any parse failure. Bound state args come first, extractors
+  after. Contract: extractor / `request_t` params are taken **by value** (a
+  reference qualifier is a static_assert), their value types are
+  default-constructible, and bound state must be copyable (reused per request —
+  use a `shared_ptr`). Classic `handler_t` registration is unchanged; the typed
+  overload is SFINAE-constrained to non-`handler_t` callables.
 - **Body binding**: request/response bodies are structs with `STFY_OBJ(...)`.
   `json::parse<T>` returns `result_t<T>` (400 on malformed input); `json::respond`
   serializes a struct and sets `Content-Type: application/json`.

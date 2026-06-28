@@ -5,12 +5,14 @@
 #include <functional>
 #include <memory>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include <vio/task.h>
 
 #include "error.h"
 #include "logging.h"
+#include "params.h"
 #include "router.h"
 #include "server_options.h"
 
@@ -47,6 +49,37 @@ public:
   void del(std::string_view pattern, handler_t handler)
   {
     _router.del(pattern, std::move(handler));
+  }
+
+  template <typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void get(std::string_view pattern, Handler &&handler, Bound &&...bound)
+  {
+    _router.get(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+  template <typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void post(std::string_view pattern, Handler &&handler, Bound &&...bound)
+  {
+    _router.post(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+  template <typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void put(std::string_view pattern, Handler &&handler, Bound &&...bound)
+  {
+    _router.put(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+  template <typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void patch(std::string_view pattern, Handler &&handler, Bound &&...bound)
+  {
+    _router.patch(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
+  }
+  template <typename Handler, typename... Bound>
+    requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
+  void del(std::string_view pattern, Handler &&handler, Bound &&...bound)
+  {
+    _router.del(pattern, detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
   }
 
   [[nodiscard]] const router_t &router() const

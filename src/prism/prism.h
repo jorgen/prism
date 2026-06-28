@@ -10,6 +10,7 @@
 #include <prism/http.h>
 #include <prism/json.h>
 #include <prism/logging.h>
+#include <prism/params.h>
 #include <prism/router.h>
 #include <prism/server_options.h>
 #include <prism/status.h>
