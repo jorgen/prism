@@ -29,7 +29,7 @@ int main()
               [](prism::request_t request) -> vio::task_t<prism::response_t>
               {
                 greeting_t greeting{"hello", std::string(request.param("name"))};
-                co_return prism::json::respond(prism::status_t::ok, greeting);
+                co_return prism::respond(request, prism::status_t::ok, greeting);
               });
       app.get("/health",
               [](prism::request_t) -> vio::task_t<prism::response_t>

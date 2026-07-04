@@ -6,11 +6,14 @@
 #include <prism/prism_export.h>
 
 #include <prism/app.h>
+#include <prism/codec.h>
+#include <prism/content.h>
 #include <prism/error.h>
 #include <prism/http.h>
 #include <prism/json.h>
 #include <prism/logging.h>
 #include <prism/params.h>
+#include <prism/render.h>
 #include <prism/router.h>
 #include <prism/server_options.h>
 #include <prism/status.h>

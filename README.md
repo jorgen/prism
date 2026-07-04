@@ -4,7 +4,7 @@
 
 A lean REST service library for **C++23**, built on
 [vio](https://github.com/jorgen/vio) (async I/O: libuv + coroutines + TLS) and
-[structify](https://github.com/jorgen/structify) (header-only JSON ↔ struct).
+[structify](https://github.com/jorgen/structify) (header-only JSON / YAML / CBOR ↔ struct).
 
 The name continues vio's light theme: libuv is *ultraviolet*, vio is *violet io*,
 and a **prism** disperses one request stream into a spectrum of routes.
@@ -15,9 +15,9 @@ and a **prism** disperses one request stream into a spectrum of routes.
 
 struct greeting_t { std::string message; STFY_OBJ(message); };
 
-vio::task_t<prism::response_t> hello(prism::path_t<"name", std::string> name)
+vio::task_t<prism::negotiated_t<greeting_t>> hello(prism::path_t<"name", std::string> name)
 {
-  co_return prism::json::respond(prism::status_t::ok, greeting_t{"hello " + name.value});
+  co_return prism::ok(greeting_t{"hello " + name.value});
 }
 
 void routes(prism::app_t &app)
@@ -31,9 +31,13 @@ VIO_MAIN(loop, argc, argv)
 }
 ```
 
+Return a struct and prism serialises it in whatever the client asked for:
+
 ```console
 $ curl localhost:8080/hello/ada
 {"message":"hello ada"}
+$ curl -H 'Accept: application/yaml' localhost:8080/hello/ada
+message: hello ada
 ```
 
 ## Features
@@ -45,11 +49,17 @@ $ curl localhost:8080/hello/ada
   (idle / header / body / write timeouts, `max_requests`, `max_connections`),
   parsing with [llhttp](https://github.com/nodejs/llhttp).
 - **Typed route parameters** — bind `path_t<"id", int>`,
-  `query_t<"q", std::optional<int>>`, and `body_t<T>` (JSON) straight into the
-  handler signature; prism parses, validates, and answers `400` *before* your
-  code runs.
-- **JSON in/out** — request and response bodies are plain structs with a single
-  `STFY_OBJ(...)` line.
+  `query_t<"q", std::optional<int>>`, and `body_t<T>` (parsed by `Content-Type`)
+  straight into the handler signature; prism parses, validates, and answers `400`
+  *before* your code runs.
+- **JSON / YAML / CBOR — negotiated** — request/response bodies are plain structs
+  with a single `STFY_OBJ(...)` line; prism picks the response format from the
+  `Accept` header (`406` if it can't) and parses the request body by its
+  `Content-Type` (`415` / `400`).
+- **Serve finished bytes** — hand prism an already-serialised or binary payload
+  (an image, a proxied body, a hand-built CSV) with
+  `response_t::finished(status, content_type, bytes)`; read raw uploads with
+  `request.raw_body()`.
 - **Pluggable logging** — a `std::function` sink with a level filter; stdout by
   default, swap in your framework in one line.
 - **Lean & consistent** — errors flow through `result_t<T>`
@@ -126,6 +136,51 @@ vio::task_t<prism::response_t> handler(prism::request_t request)
 }
 ```
 
+## Content negotiation
+
+Wrap your value in `negotiated_t<T>` and prism chooses the wire format from the
+request's `Accept` header — JSON, YAML, or CBOR — serialising through structify.
+`prism::ok` / `prism::created` are shorthands; `prism::respond(status, value)`
+takes an explicit status.
+
+```cpp
+vio::task_t<prism::negotiated_t<task_t>> get_task(std::shared_ptr<store_t> store,
+                                                  prism::path_t<"id", int> id)
+{
+  if (task_t *t = store->find(id.value)) co_return prism::ok(*t);
+  co_return prism::response_t::text(prism::status_t::not_found, "task not found");
+}
+```
+
+- **Response**: `Accept: application/yaml` → YAML, `application/cbor` → CBOR,
+  absent / `*/*` → JSON, anything unsatisfiable → `406`.
+- **Request body**: `body_t<T>` parses per `Content-Type`
+  (`application/json` / `application/yaml` / `application/cbor`); an unknown type
+  is `415`, malformed bytes are `400`.
+- A `response_t` returned from a negotiated handler (e.g. a differently-typed
+  error body) is sent **as-is**, bypassing negotiation — so success and error
+  bodies of different shapes coexist in one handler.
+
+A classic `request_t` handler has no value wrapper, so negotiate explicitly:
+
+```cpp
+co_return prism::respond(request, prism::status_t::ok, value);
+```
+
+### Finished & binary bodies
+
+Already hold the bytes — an image, a proxied payload, a hand-built CSV? Send them
+verbatim with the content type you choose (the body is a binary-safe buffer, so
+this covers CBOR, JPEG, anything):
+
+```cpp
+co_return prism::response_t::finished(prism::status_t::ok, "text/csv", std::move(csv));
+```
+
+Read a raw request body (uploads) as bytes with `request.raw_body()`
+(`std::span<const std::byte>`); `body_t<T>` stays for structured input.
+`prism::json::respond` is unchanged — the explicit, always-JSON path.
+
 ## Async handlers
 
 Handlers are coroutines. Take a `request_t` to reach the event loop and
@@ -201,8 +256,9 @@ UndefinedBehaviorSanitizer on Linux for every push and pull request.
 
 - [`examples/hello_prism.cpp`](examples/hello_prism.cpp) — the smallest server.
 - [`examples/task_api.cpp`](examples/task_api.cpp) — an in-memory CRUD REST
-  service: typed path/query/body parameters, JSON, an async endpoint, a custom
-  log sink, and an optional port read from `argv`.
+  service: typed path/query/body parameters, JSON/YAML/CBOR content negotiation,
+  a `GET /tasks.csv` route serving hand-built bytes via `finished`, an async
+  endpoint, a custom log sink, and an optional port read from `argv`.
 
 ## License
 

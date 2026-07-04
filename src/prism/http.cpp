@@ -143,12 +143,26 @@ bool request_t::has_query(std::string_view name) const
   return find_query(target, name).has_value();
 }
 
+std::span<const std::byte> request_t::raw_body() const
+{
+  return {reinterpret_cast<const std::byte *>(body.data()), body.size()};
+}
+
 response_t response_t::text(status_t status, std::string body)
 {
   response_t response;
   response.status = status;
   response.body = std::move(body);
   response.headers.set("Content-Type", "text/plain; charset=utf-8");
+  return response;
+}
+
+response_t response_t::finished(status_t status, std::string content_type, std::string bytes)
+{
+  response_t response;
+  response.status = status;
+  response.body = std::move(bytes);
+  response.headers.set("Content-Type", std::move(content_type));
   return response;
 }
 } // namespace prism

@@ -4,6 +4,9 @@ set(public_headers
         prism/error.h
         prism/http.h
         prism/json.h
+        prism/codec.h
+        prism/content.h
+        prism/render.h
         prism/logging.h
         prism/params.h
         prism/router.h
@@ -12,6 +15,7 @@ set(public_headers
 )
 set(sources
         prism/http.cpp
+        prism/content.cpp
         prism/logging.cpp
         prism/router.cpp
         prism/app.cpp

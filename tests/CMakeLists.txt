@@ -7,6 +7,7 @@ add_executable(prism_tests
         logging_tests.cpp
         http_tests.cpp
         typed_tests.cpp
+        content_tests.cpp
         router_tests.cpp
         http1_tests.cpp
         server_tests.cpp

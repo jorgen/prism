@@ -21,8 +21,10 @@ enum class status_t : uint16_t
   forbidden = 403,
   not_found = 404,
   method_not_allowed = 405,
+  not_acceptable = 406,
   conflict = 409,
   payload_too_large = 413,
+  unsupported_media_type = 415,
   unprocessable_entity = 422,
   too_many_requests = 429,
   request_header_fields_too_large = 431,
@@ -61,10 +63,14 @@ constexpr std::string_view reason_phrase(status_t s)
     return "Not Found";
   case status_t::method_not_allowed:
     return "Method Not Allowed";
+  case status_t::not_acceptable:
+    return "Not Acceptable";
   case status_t::conflict:
     return "Conflict";
   case status_t::payload_too_large:
     return "Payload Too Large";
+  case status_t::unsupported_media_type:
+    return "Unsupported Media Type";
   case status_t::unprocessable_entity:
     return "Unprocessable Entity";
   case status_t::too_many_requests:

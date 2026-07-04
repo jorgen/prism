@@ -91,7 +91,7 @@ vio::task_t<prism::response_t> health(prism::request_t)
   co_return prism::response_t::text(prism::status_t::ok, "ok");
 }
 
-vio::task_t<prism::response_t> list_tasks(std::shared_ptr<store_t> store, prism::query_t<"done", std::optional<bool>> done)
+vio::task_t<prism::negotiated_t<task_list_t>> list_tasks(std::shared_ptr<store_t> store, prism::query_t<"done", std::optional<bool>> done)
 {
   task_list_t result;
   for (const auto &task : store->tasks)
@@ -101,10 +101,10 @@ vio::task_t<prism::response_t> list_tasks(std::shared_ptr<store_t> store, prism:
       result.tasks.push_back(task);
     }
   }
-  co_return prism::json::respond(prism::status_t::ok, result);
+  co_return prism::ok(result);
 }
 
-vio::task_t<prism::response_t> create_task(std::shared_ptr<store_t> store, prism::body_t<task_create_t> in)
+vio::task_t<prism::negotiated_t<task_item_t>> create_task(std::shared_ptr<store_t> store, prism::body_t<task_create_t> in)
 {
   if (in.value.title.empty())
   {
@@ -112,19 +112,19 @@ vio::task_t<prism::response_t> create_task(std::shared_ptr<store_t> store, prism
   }
   task_item_t created{store->next_id++, std::move(in.value.title), false};
   store->tasks.push_back(created);
-  co_return prism::json::respond(prism::status_t::created, created);
+  co_return prism::created(created);
 }
 
-vio::task_t<prism::response_t> get_task(std::shared_ptr<store_t> store, prism::path_t<"id", int> id)
+vio::task_t<prism::negotiated_t<task_item_t>> get_task(std::shared_ptr<store_t> store, prism::path_t<"id", int> id)
 {
   if (task_item_t *task = find_task(*store, id.value))
   {
-    co_return prism::json::respond(prism::status_t::ok, *task);
+    co_return prism::ok(*task);
   }
   co_return error_response(prism::status_t::not_found, "task not found");
 }
 
-vio::task_t<prism::response_t> update_task(std::shared_ptr<store_t> store, prism::path_t<"id", int> id, prism::body_t<task_update_t> in)
+vio::task_t<prism::negotiated_t<task_item_t>> update_task(std::shared_ptr<store_t> store, prism::path_t<"id", int> id, prism::body_t<task_update_t> in)
 {
   task_item_t *task = find_task(*store, id.value);
   if (task == nullptr)
@@ -133,7 +133,7 @@ vio::task_t<prism::response_t> update_task(std::shared_ptr<store_t> store, prism
   }
   task->title = std::move(in.value.title);
   task->done = in.value.done;
-  co_return prism::json::respond(prism::status_t::ok, *task);
+  co_return prism::ok(*task);
 }
 
 vio::task_t<prism::response_t> remove_task(std::shared_ptr<store_t> store, prism::path_t<"id", int> id)
@@ -147,6 +147,16 @@ vio::task_t<prism::response_t> remove_task(std::shared_ptr<store_t> store, prism
     }
   }
   co_return error_response(prism::status_t::not_found, "task not found");
+}
+
+vio::task_t<prism::response_t> export_csv(std::shared_ptr<store_t> store)
+{
+  std::string csv = "id,title,done\n";
+  for (const auto &task : store->tasks)
+  {
+    csv += std::to_string(task.id) + ',' + task.title + ',' + (task.done ? "true" : "false") + '\n';
+  }
+  co_return prism::response_t::finished(prism::status_t::ok, "text/csv", std::move(csv));
 }
 
 vio::task_t<prism::response_t> slow(prism::path_t<"ms", int> ms, prism::request_t request)
@@ -168,6 +178,7 @@ void configure(prism::app_t &app)
   app.get("/tasks/{id}", get_task, store);
   app.put("/tasks/{id}", update_task, store);
   app.del("/tasks/{id}", remove_task, store);
+  app.get("/tasks.csv", export_csv, store);
   app.get("/slow/{ms}", slow);
 }
 } // namespace

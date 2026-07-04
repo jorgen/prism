@@ -14,9 +14,12 @@
 
 #include <vio/task.h>
 
+#include "codec.h"
+#include "content.h"
 #include "error.h"
 #include "http.h"
 #include "json.h"
+#include "render.h"
 #include "router.h"
 #include "status.h"
 
@@ -195,7 +198,18 @@ struct arg_builder_t<body_t<T>>
 {
   static result_t<body_t<T>> build(const request_t &request)
   {
-    auto parsed = json::parse<T>(request.body);
+    format_t format = format_t::json;
+    const std::string *content_type = request.headers.find("Content-Type");
+    if (content_type != nullptr)
+    {
+      std::optional<format_t> matched = format_for_content_type(*content_type);
+      if (!matched)
+      {
+        return fail(status_t::unsupported_media_type, "unsupported request media type");
+      }
+      format = *matched;
+    }
+    auto parsed = parse_as<T>(format, request.body);
     if (!parsed)
     {
       return std::unexpected(parsed.error());
@@ -234,6 +248,20 @@ inline vio::task_t<response_t> ready_response(response_t response)
   co_return response;
 }
 
+template <typename Handler, typename BoundTuple, typename ExtractedTuple, std::size_t... BoundIndex, std::size_t... ExtractIndex>
+vio::task_t<response_t> run_typed(Handler handler, BoundTuple bound, request_t request, ExtractedTuple extracted, std::index_sequence<BoundIndex...>, std::index_sequence<ExtractIndex...>)
+{
+  auto result = co_await handler(std::get<BoundIndex>(bound)..., std::move(std::get<ExtractIndex>(extracted))...);
+  if constexpr (std::is_same_v<std::remove_cvref_t<decltype(result)>, response_t>)
+  {
+    co_return std::move(result);
+  }
+  else
+  {
+    co_return render(request, std::move(result));
+  }
+}
+
 template <typename Handler, typename ArgsTuple, typename BoundTuple, std::size_t... BoundIndex, std::size_t... ExtractIndex>
 handler_t make_typed_impl(Handler handler, BoundTuple bound, std::index_sequence<BoundIndex...>, std::index_sequence<ExtractIndex...>)
 {
@@ -248,7 +276,7 @@ handler_t make_typed_impl(Handler handler, BoundTuple bound, std::index_sequence
     {
       return ready_response(response_t::text(error->code, error->msg));
     }
-    return std::apply([&](auto &&...extracted_args) { return handler(std::get<BoundIndex>(bound)..., std::move(extracted_args)...); }, std::move(extracted));
+    return run_typed(handler, bound, std::move(request), std::move(extracted), std::index_sequence<BoundIndex...>{}, std::index_sequence<ExtractIndex...>{});
   };
 }
 
