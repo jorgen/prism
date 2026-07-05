@@ -1,5 +1,5 @@
 add_library(doctest_main STATIC doctest-main.cpp)
-target_link_libraries(doctest_main PUBLIC doctest)
+target_link_libraries(doctest_main PUBLIC doctest::doctest)
 target_compile_definitions(doctest_main PUBLIC DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
 
 add_executable(prism_tests
@@ -17,6 +17,6 @@ add_executable(prism_tests
         http2_server_tests.cpp
         static_files_tests.cpp
 )
-target_link_libraries(prism_tests PRIVATE prism doctest_main doctest)
+target_link_libraries(prism_tests PRIVATE prism doctest_main doctest::doctest)
 
 add_test(NAME prism_tests COMMAND prism_tests)

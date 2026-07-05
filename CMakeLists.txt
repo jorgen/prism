@@ -43,6 +43,11 @@ option(PRISM_BUILD_TESTS "Build tests" ON)
 option(PRISM_BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_SHARED_LIBS "Build shared libs" OFF)
 
+option(PRISM_USE_SYSTEM_VIO "Use a pre-built vio via find_package instead of the bundled fetch" OFF)
+option(PRISM_USE_SYSTEM_STRUCTIFY "Use a pre-built structify via find_package instead of the bundled fetch" OFF)
+option(PRISM_USE_SYSTEM_DOCTEST "Use a pre-built doctest via find_package instead of the bundled fetch" OFF)
+option(PRISM_USE_SYSTEM_LLHTTP "Use a pre-built llhttp via find_package instead of the bundled fetch" OFF)
+
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 find_package(Threads)
 

@@ -41,7 +41,7 @@ generate_export_header(prism
 target_compile_features(prism PUBLIC cxx_std_23)
 target_compile_definitions(prism PRIVATE PRISM_VERSION="${PROJECT_VERSION}")
 
-target_link_libraries(prism PUBLIC vio structify::structify PRIVATE llhttp::llhttp)
+target_link_libraries(prism PUBLIC vio::vio structify::structify PRIVATE llhttp::llhttp)
 
 target_include_directories(prism
         PUBLIC

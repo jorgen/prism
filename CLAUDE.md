@@ -60,6 +60,33 @@ in `CMake/Build3rdParty.cmake`:
 To bump a dependency: change the git ref in the URL **and** recompute the
 SHA256 (`curl -sL <url> | shasum -a 256`).
 
+### Togglable dependencies (pre-built / find_package)
+
+Every dependency can be consumed **pre-built** instead of fetched, via a per-dep
+option (default `OFF` = bundled): `PRISM_USE_SYSTEM_VIO`,
+`PRISM_USE_SYSTEM_STRUCTIFY`, `PRISM_USE_SYSTEM_DOCTEST`, `PRISM_USE_SYSTEM_LLHTTP`.
+When `ON`, `Build3rdParty.cmake` calls `find_package(<dep> CONFIG REQUIRED)`
+instead of `add_subdirectory`, and `3rdPartyPackages.cmake` skips that fetch
+(guarded by `if(NOT PRISM_USE_SYSTEM_<DEP>)`). All targets are linked by their
+**namespaced** name (`vio::vio`, `structify::structify`, `doctest::doctest`,
+`llhttp::llhttp`) so the same link line works bundled or system — bundled vio adds
+a `vio::vio` alias. (Watch for bare target names: `examples/CMakeLists.txt` and
+`tests/CMakeLists.txt` must use `vio::vio` / `doctest::doctest`, not `vio` /
+`doctest`, or the system build fails to link.)
+
+- **vio** (`PRISM_USE_SYSTEM_VIO`): requires a vio installed with `VIO_INSTALL=ON`
+  **and built against system deps** — vio only emits a relocatable
+  `find_package(vio)` config in that configuration (see vio's `CMake/vioConfig.cmake.in`,
+  which `find_dependency`s libuv/LibreSSL/ada).
+- **Overriding vio's deps through bundled vio**: prism `add_subdirectory`s vio and
+  force-sets only `VIO_BUILD_*`/`VIO_INSTALL`, never the `VIO_USE_SYSTEM_*` toggles,
+  so a consumer can pass `-DVIO_USE_SYSTEM_LIBRESSL=ON` (etc.) or the
+  `-DVIO_<DEP>_VERSION/URL/SHA256` overrides straight through on the top-level
+  configure line. Documented in the README "Dependencies & overrides" section.
+
+vio mirrors this: `VIO_USE_SYSTEM_{LIBUV,LIBRESSL,ADA,DOCTEST,CMAKERC}` +
+per-dep `VIO_<DEP>_VERSION/URL/SHA256` cache vars + `VIO_INSTALL`.
+
 ## Conventions
 
 - **C++23**, built with `-fno-exceptions -fno-rtti` (MSVC equivalents) for

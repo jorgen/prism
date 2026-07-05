@@ -390,6 +390,72 @@ cmake --preset asan && cmake --build cmake-build-asan && ctest --preset asan
 CI runs the suite under AddressSanitizer, ThreadSanitizer, and
 UndefinedBehaviorSanitizer on Linux for every push and pull request.
 
+## Dependencies & overrides
+
+prism's dependencies — **vio**, **structify**, **llhttp**, and **doctest** — are
+fetched and pinned (URL + SHA256) at configure time via
+[cmake-dep](https://github.com/jorgen/cmake-dep); no manual setup. Each one can
+instead be consumed **pre-built** by flipping a per-dependency option and pointing
+CMake at the install prefix (`…Config.cmake` on `CMAKE_PREFIX_PATH`):
+
+| Option (default `OFF`)        | Effect when `ON`                                   |
+|-------------------------------|----------------------------------------------------|
+| `PRISM_USE_SYSTEM_VIO`        | `find_package(vio)` instead of the bundled build   |
+| `PRISM_USE_SYSTEM_STRUCTIFY`  | `find_package(structify)`                          |
+| `PRISM_USE_SYSTEM_DOCTEST`    | `find_package(doctest)` (test build only)          |
+| `PRISM_USE_SYSTEM_LLHTTP`     | `find_package(llhttp)`                             |
+
+```bash
+cmake --preset debug \
+  -DPRISM_USE_SYSTEM_DOCTEST=ON -DPRISM_USE_SYSTEM_LLHTTP=ON \
+  -DCMAKE_PREFIX_PATH="/path/to/prefix"
+```
+
+When an option is `ON`, prism does not fetch that dependency's sources at all — it
+must be resolvable via `find_package`.
+
+### Overriding vio's dependencies through prism
+
+vio carries the same per-dependency toggles (`VIO_USE_SYSTEM_LIBUV`,
+`VIO_USE_SYSTEM_LIBRESSL`, `VIO_USE_SYSTEM_ADA`, `VIO_USE_SYSTEM_DOCTEST`,
+`VIO_USE_SYSTEM_CMAKERC`). Because prism builds bundled vio with
+`add_subdirectory`, **these pass straight through from the top-level configure
+line** — prism force-sets only `VIO_BUILD_*`, never the dependency toggles. So a
+prism consumer can override any of vio's dependencies without editing vio.
+
+Use a specific, pre-installed **LibreSSL** (e.g. a newer version):
+
+```bash
+cmake --preset debug \
+  -DVIO_USE_SYSTEM_LIBRESSL=ON \
+  -DLIBRESSL_ROOT_DIR="/opt/libressl-4.1.0"      # CMake's FindLibreSSL
+```
+
+Or have vio *fetch and build* a different version — every vio dependency exposes
+`VIO_<DEP>_VERSION` / `VIO_<DEP>_URL` / `VIO_<DEP>_SHA256` cache variables:
+
+```bash
+cmake --preset debug \
+  -DVIO_LIBRESSL_VERSION=4.0.0 \
+  -DVIO_LIBRESSL_URL=https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.0.0.tar.gz \
+  -DVIO_LIBRESSL_SHA256=<sha256>
+```
+
+A fully pre-built stack — vio installed against system deps, then consumed by prism:
+
+```bash
+cmake -S vio -B vio-build -DVIO_INSTALL=ON \
+  -DVIO_USE_SYSTEM_LIBUV=ON -DVIO_USE_SYSTEM_LIBRESSL=ON -DVIO_USE_SYSTEM_ADA=ON \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX"
+cmake --build vio-build --target install
+
+cmake --preset debug -DPRISM_USE_SYSTEM_VIO=ON -DCMAKE_PREFIX_PATH="$PREFIX"
+```
+
+`VIO_INSTALL` emits a relocatable `find_package(vio)` config only when vio is built
+against system deps (a bundled, in-tree build vendors targets that aren't
+installed); it installs the library and headers otherwise.
+
 ## Examples
 
 - [`examples/hello_prism.cpp`](examples/hello_prism.cpp) — the smallest server.
