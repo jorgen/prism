@@ -34,8 +34,8 @@ void emit(const std::shared_ptr<const logger_t> &logger, log_level_t level, std:
 template <typename Transport>
 struct conn_ctx_t
 {
-  conn_ctx_t(Transport transport, vio::event_loop_t &el, std::shared_ptr<const router_t> r, std::shared_ptr<const logger_t> l, keepalive_options_t o)
-    : transport(std::move(transport))
+  conn_ctx_t(Transport transport_arg, vio::event_loop_t &el, std::shared_ptr<const router_t> r, std::shared_ptr<const logger_t> l, keepalive_options_t o)
+    : transport(std::move(transport_arg))
     , loop(el)
     , router(std::move(r))
     , logger(std::move(l))
@@ -85,9 +85,9 @@ struct flow_gate_t
 };
 
 template <typename Transport>
-void request_flush(std::shared_ptr<conn_ctx_t<Transport>> ctx)
+void request_flush(std::shared_ptr<conn_ctx_t<Transport>> state)
 {
-  if (ctx->writing || ctx->write_dead)
+  if (state->writing || state->write_dead)
   {
     return;
   }
@@ -110,13 +110,13 @@ void request_flush(std::shared_ptr<conn_ctx_t<Transport>> ctx)
     }
     ctx->writing = false;
     wake_flow(*ctx);
-  }(std::move(ctx));
+  }(std::move(state));
 }
 
 template <typename Transport>
-void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> ctx, ready_request_t ready)
+void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> state, ready_request_t request)
 {
-  ++ctx->inflight;
+  ++state->inflight;
   [](std::shared_ptr<conn_ctx_t<Transport>> ctx, ready_request_t ready) -> vio::detached_task_t
   {
     ready.request.loop = &ctx->loop;
@@ -182,7 +182,7 @@ void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> ctx, ready_request_t r
     }
 
     request_flush(std::move(ctx));
-  }(std::move(ctx), std::move(ready));
+  }(std::move(state), std::move(request));
 }
 
 template <typename Transport>
