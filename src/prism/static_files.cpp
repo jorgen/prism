@@ -94,6 +94,19 @@ bool safe_relative(std::string_view input, std::string &out)
   }
   return true;
 }
+
+// A "navigation" path is a client-side route (SPA), not an asset request: its
+// last segment carries no file extension. Used to decide the SPA fallback.
+bool is_navigation(std::string_view relative)
+{
+  if (relative.empty())
+  {
+    return true;
+  }
+  std::size_t slash = relative.find_last_of('/');
+  std::string_view base = slash == std::string_view::npos ? relative : relative.substr(slash + 1);
+  return base.find('.') == std::string_view::npos;
+}
 } // namespace
 
 std::string_view content_type_for_path(std::string_view path)
@@ -153,9 +166,9 @@ std::string_view content_type_for_path(std::string_view path)
   return "application/octet-stream";
 }
 
-handler_t static_file_handler(std::string root, std::string index)
+handler_t static_file_handler(std::string root, std::string index, bool spa_fallback)
 {
-  return [root = std::move(root), index = std::move(index)](request_t request) -> vio::task_t<response_t>
+  return [root = std::move(root), index = std::move(index), spa_fallback](request_t request) -> vio::task_t<response_t>
   {
     if (request.loop == nullptr)
     {
@@ -173,11 +186,7 @@ handler_t static_file_handler(std::string root, std::string index)
     path += relative.empty() ? index : relative;
 
     auto info = vio::stat_file(*request.loop, path);
-    if (!info.has_value())
-    {
-      co_return response_t::text(status_t::not_found, "Not Found");
-    }
-    if ((info->st_mode & S_IFMT) == S_IFDIR)
+    if (info.has_value() && (info->st_mode & S_IFMT) == S_IFDIR)
     {
       if (!path.empty() && path.back() != '/')
       {
@@ -185,6 +194,14 @@ handler_t static_file_handler(std::string root, std::string index)
       }
       path += index;
       info = vio::stat_file(*request.loop, path);
+    }
+    if (!info.has_value())
+    {
+      if (spa_fallback && is_navigation(relative))
+      {
+        path = root + "/" + index;
+        info = vio::stat_file(*request.loop, path);
+      }
       if (!info.has_value())
       {
         co_return response_t::text(status_t::not_found, "Not Found");

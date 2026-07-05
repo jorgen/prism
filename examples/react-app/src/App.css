@@ -1,0 +1,71 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 34rem;
+  margin: 3rem auto;
+  padding: 0 1rem;
+  line-height: 1.5;
+}
+
+h1 {
+  color: #6a3fb5;
+}
+
+form {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1.5rem 0;
+}
+
+input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+}
+
+li {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+li.done {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.check {
+  display: inline-block;
+  width: 1.5rem;
+  color: #6a3fb5;
+}
+
+.error {
+  color: #c0392b;
+}
+
+.hint {
+  color: gray;
+  font-size: 0.9rem;
+}

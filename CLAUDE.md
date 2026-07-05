@@ -95,10 +95,12 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   - `router.h` / `router.cpp` — `handler_t`, `router_t` (segment matching,
     `{param}` capture, a trailing `{name...}` wildcard that captures the rest of
     the path, and `dispatch`).
-  - `static_files.h` / `static_files.cpp` — `static_file_handler(root)` (async
-    file serving via vio, content-type by extension, index.html, traversal
-    rejection) and `content_type_for_path`; `app_t::static_files(prefix, root)`
-    mounts it on a `"<prefix>/{path...}"` wildcard route.
+  - `static_files.h` / `static_files.cpp` — `static_file_handler(root, index,
+    spa_fallback)` (async file serving via vio, content-type by extension,
+    index.html, traversal rejection, and an optional SPA fallback that serves
+    index.html for extension-less navigation paths) and `content_type_for_path`;
+    `app_t::static_files(prefix, root, spa_fallback)` mounts it on a
+    `"<prefix>/{path...}"` wildcard route.
   - `app.h` / `app.cpp` — `app_t` facade; `listen()` binds a TCP server and
     drives connections through the router. `prism::run(loop, host, port,
     configure, options)` is a coroutine that builds an `app_t`, runs the
@@ -147,8 +149,12 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   h2 client over a loopback socket).
 - `examples/` — `hello_prism.cpp` (minimal), `task_api.cpp` (in-memory CRUD REST
   service; its `/tasks.csv` export uses `response_t::streaming`), `hello_h2c.cpp`
-  (cleartext HTTP/2, `listen` with `protocol = h2c`), and `hello_h2tls.cpp`
-  (HTTP/2 over TLS with ALPN via `listen_tls`, cert/key from `argv`).
+  (cleartext HTTP/2, `listen` with `protocol = h2c`), `hello_h2tls.cpp` (HTTP/2
+  over TLS with ALPN via `listen_tls`, cert/key from `argv`), `webapp.cpp` +
+  `webroot/` (REST + a static site via `static_files`), and `react-app/` (a
+  TypeScript React + Vite app: `server.cpp` serves the REST API and the built SPA
+  with `spa_fallback`; `README.md` covers the dev-with-Vite-proxy / deploy
+  workflow — `node_modules`/`dist` are git-ignored).
 
 ## Architecture notes
 

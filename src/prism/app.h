@@ -153,8 +153,9 @@ public:
   // Serve files from `root` under the `url_prefix` path (e.g. static_files("/",
   // "webroot") or static_files("/assets", "dist/assets")). Registers a wildcard
   // GET route, so register your REST routes first — the first match wins, and a
-  // root ("/") mount otherwise catches everything.
-  void static_files(std::string_view url_prefix, std::string root);
+  // root ("/") mount otherwise catches everything. Set `spa_fallback` to serve
+  // index.html for unmatched navigation paths (single-page-app client routing).
+  void static_files(std::string_view url_prefix, std::string root, bool spa_fallback = false);
 
   // Run a single request through the router. Useful for tests and for
   // embedding prism behind another transport.

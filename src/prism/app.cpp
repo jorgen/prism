@@ -13,7 +13,7 @@
 
 namespace prism
 {
-void app_t::static_files(std::string_view url_prefix, std::string root)
+void app_t::static_files(std::string_view url_prefix, std::string root, bool spa_fallback)
 {
   std::string pattern(url_prefix);
   if (pattern.empty() || pattern.back() != '/')
@@ -21,7 +21,7 @@ void app_t::static_files(std::string_view url_prefix, std::string root)
     pattern += '/';
   }
   pattern += "{path...}";
-  _router.get(pattern, static_file_handler(std::move(root)));
+  _router.get(pattern, static_file_handler(std::move(root), "index.html", spa_fallback));
 }
 
 vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel, keepalive_options_t options)

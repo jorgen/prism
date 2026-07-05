@@ -71,3 +71,38 @@ TEST_CASE("static_file_handler serves a file and rejects traversal")
     });
   CHECK(rc == 0);
 }
+
+TEST_CASE("static_file_handler falls back to index.html for SPA navigation paths")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      std::error_code ec;
+      std::string tmpl = (std::filesystem::temp_directory_path(ec) / "prism_spa_XXXXXX").string();
+      REQUIRE(!ec);
+      auto dir_or = vio::mkdtemp_path(loop, tmpl);
+      REQUIRE(dir_or.has_value());
+      std::string dir = dir_or.value();
+
+      {
+        std::ofstream index(dir + "/index.html", std::ios::binary);
+        index << "<!doctype html><title>spa</title>";
+      }
+
+      prism::handler_t handler = prism::static_file_handler(dir, "index.html", true);
+
+      // A client-side route (no extension) that has no file -> index.html.
+      prism::response_t route = co_await handler(static_request(loop, "dashboard/settings"));
+      CHECK(route.status == prism::status_t::ok);
+      CHECK(route.body.find("<!doctype html>") != std::string::npos);
+      REQUIRE(route.headers.find("Content-Type") != nullptr);
+      CHECK(*route.headers.find("Content-Type") == "text/html; charset=utf-8");
+
+      // A missing asset (has an extension) still 404s.
+      prism::response_t asset = co_await handler(static_request(loop, "assets/missing.js"));
+      CHECK(asset.status == prism::status_t::not_found);
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}

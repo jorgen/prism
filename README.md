@@ -215,11 +215,20 @@ app.static_files("/", "webroot");          // everything else -> ./webroot
   …; `application/octet-stream` otherwise).
 - **Path traversal is rejected** — `..` segments (raw or percent-encoded) never
   escape `root`.
+- **Single-page apps** — pass `spa_fallback = true` and prism serves `index.html`
+  for unmatched *navigation* paths (e.g. `/dashboard`), so a React/Vue/… router
+  survives a full page reload; a missing *asset* (`/assets/x.js`) still 404s.
 - Files are read whole (fine for typical web assets); response-body streaming for
   very large files is future work.
 
-See [`examples/webapp.cpp`](examples/webapp.cpp) for a REST API and a static site
-served from the same server.
+```cpp
+app.static_files("/", "dist", /*spa_fallback=*/true);   // serve a built SPA
+```
+
+See [`examples/webapp.cpp`](examples/webapp.cpp) for a REST API plus a static
+site, and [`examples/react-app/`](examples/react-app) for a full TypeScript React
++ Vite app — developed with hot reload against a live prism API, then deployed as
+a single prism binary serving both the built SPA and the API.
 
 ## Async handlers
 
@@ -387,6 +396,10 @@ UndefinedBehaviorSanitizer on Linux for every push and pull request.
   ALPN; takes `cert.pem key.pem` on the command line.
 - [`examples/webapp.cpp`](examples/webapp.cpp) — a REST API plus a static site
   (`examples/webroot/`) served from one prism app via `static_files`.
+- [`examples/react-app/`](examples/react-app) — a TypeScript **React + Vite** app:
+  hot-reload development against a live prism API, then deployed as one prism
+  binary serving the built SPA and the REST API. See its
+  [README](examples/react-app/README.md) for the dev/deploy workflow.
 
 ## License
 

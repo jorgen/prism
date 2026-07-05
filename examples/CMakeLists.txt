@@ -15,3 +15,6 @@ target_link_libraries(webapp PRIVATE prism vio)
 add_custom_command(TARGET webapp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_CURRENT_SOURCE_DIR}/webroot $<TARGET_FILE_DIR:webapp>/webroot)
+
+add_executable(react_server react-app/server.cpp)
+target_link_libraries(react_server PRIVATE prism vio)
