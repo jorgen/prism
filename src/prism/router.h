@@ -55,8 +55,9 @@ public:
 private:
   struct segment_t
   {
-    std::string text; // literal text, or the parameter name when is_param
+    std::string text; // literal text, or the parameter name when is_param/is_wildcard
     bool is_param = false;
+    bool is_wildcard = false; // "{name...}" as the final segment: captures the rest of the path
   };
 
   struct route_t

@@ -69,6 +69,10 @@ message: hello ada
   (an image, a proxied body, a hand-built CSV) with
   `response_t::finished(status, content_type, bytes)`; read raw uploads with
   `request.raw_body()`.
+- **Static files** — `app.static_files(url_prefix, root)` serves a directory
+  (your web app's built assets) alongside your REST routes: async file reads,
+  content-type from the extension, `index.html` for directories, and path-traversal
+  rejection.
 - **Pluggable logging** — a `std::function` sink with a level filter; stdout by
   default, swap in your framework in one line.
 - **Lean & consistent** — errors flow through `result_t<T>`
@@ -189,6 +193,33 @@ co_return prism::response_t::finished(prism::status_t::ok, "text/csv", std::move
 Read a raw request body (uploads) as bytes with `request.raw_body()`
 (`std::span<const std::byte>`); `body_t<T>` stays for structured input.
 `prism::json::respond` is unchanged — the explicit, always-JSON path.
+
+## Static files
+
+Serving a single-page app or a bundle of assets next to your API is one call.
+`app.static_files(url_prefix, root)` mounts a directory: a `GET` under
+`url_prefix` maps to a file under `root`, read asynchronously off the event loop.
+
+```cpp
+prism::app_t app;
+
+app.get("/api/hello/{name}", api_hello);   // register REST routes first
+app.static_files("/", "webroot");          // everything else -> ./webroot
+```
+
+- **Order matters** — `static_files` registers a wildcard route (internally
+  `"<prefix>/{path...}"`), so register your REST routes *before* it; the first
+  match wins, and a `"/"` mount would otherwise catch everything.
+- A directory (or the bare prefix) serves `index.html`; a missing file is `404`.
+- **Content-Type** comes from the extension (html, css, js, json, svg, png, wasm,
+  …; `application/octet-stream` otherwise).
+- **Path traversal is rejected** — `..` segments (raw or percent-encoded) never
+  escape `root`.
+- Files are read whole (fine for typical web assets); response-body streaming for
+  very large files is future work.
+
+See [`examples/webapp.cpp`](examples/webapp.cpp) for a REST API and a static site
+served from the same server.
 
 ## Async handlers
 
@@ -354,6 +385,8 @@ UndefinedBehaviorSanitizer on Linux for every push and pull request.
   try `curl --http2-prior-knowledge -v http://127.0.0.1:8080/health`.
 - [`examples/hello_h2tls.cpp`](examples/hello_h2tls.cpp) — HTTP/2 over TLS with
   ALPN; takes `cert.pem key.pem` on the command line.
+- [`examples/webapp.cpp`](examples/webapp.cpp) — a REST API plus a static site
+  (`examples/webroot/`) served from one prism app via `static_files`.
 
 ## License
 

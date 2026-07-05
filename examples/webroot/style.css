@@ -1,0 +1,22 @@
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  max-width: 40rem;
+  margin: 3rem auto;
+  padding: 0 1rem;
+  line-height: 1.5;
+}
+
+h1 {
+  color: #6a3fb5;
+}
+
+button {
+  margin-left: 0.5rem;
+}
+
+pre {
+  background: #f4f4f6;
+  padding: 1rem;
+  border-radius: 6px;
+  min-height: 1.5rem;
+}

@@ -12,6 +12,7 @@ set(public_headers
         prism/router.h
         prism/app.h
         prism/server_options.h
+        prism/static_files.h
 )
 set(sources
         prism/http.cpp
@@ -19,6 +20,7 @@ set(sources
         prism/logging.cpp
         prism/router.cpp
         prism/app.cpp
+        prism/static_files.cpp
         prism/version.cpp
         prism/detail/http1.cpp
         prism/detail/server.cpp

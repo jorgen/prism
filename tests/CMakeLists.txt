@@ -15,6 +15,7 @@ add_executable(prism_tests
         http2_hpack_tests.cpp
         http2_connection_tests.cpp
         http2_server_tests.cpp
+        static_files_tests.cpp
 )
 target_link_libraries(prism_tests PRIVATE prism doctest_main doctest)
 

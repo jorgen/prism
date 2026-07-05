@@ -93,7 +93,12 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
     (`std::function<void(log_level_t, std::string_view)>`), `logger_t`, and
     `default_stdout_sink`.
   - `router.h` / `router.cpp` — `handler_t`, `router_t` (segment matching,
-    `{param}` capture, `dispatch`).
+    `{param}` capture, a trailing `{name...}` wildcard that captures the rest of
+    the path, and `dispatch`).
+  - `static_files.h` / `static_files.cpp` — `static_file_handler(root)` (async
+    file serving via vio, content-type by extension, index.html, traversal
+    rejection) and `content_type_for_path`; `app_t::static_files(prefix, root)`
+    mounts it on a `"<prefix>/{path...}"` wildcard route.
   - `app.h` / `app.cpp` — `app_t` facade; `listen()` binds a TCP server and
     drives connections through the router. `prism::run(loop, host, port,
     configure, options)` is a coroutine that builds an `app_t`, runs the

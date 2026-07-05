@@ -9,9 +9,21 @@
 #include <vio/operation/tls_server.h>
 
 #include "prism/detail/server.h"
+#include "prism/static_files.h"
 
 namespace prism
 {
+void app_t::static_files(std::string_view url_prefix, std::string root)
+{
+  std::string pattern(url_prefix);
+  if (pattern.empty() || pattern.back() != '/')
+  {
+    pattern += '/';
+  }
+  pattern += "{path...}";
+  _router.get(pattern, static_file_handler(std::move(root)));
+}
+
 vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel, keepalive_options_t options)
 {
   if (!_route_errors.empty())

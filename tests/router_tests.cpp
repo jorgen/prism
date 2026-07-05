@@ -82,3 +82,34 @@ TEST_CASE("router returns 404 for unknown paths and 405 for wrong methods")
     });
   CHECK(rc == 0);
 }
+
+TEST_CASE("router captures a trailing wildcard segment")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.get("/files/{path...}",
+              [](prism::request_t request) -> vio::task_t<prism::response_t>
+              {
+                co_return prism::response_t::text(prism::status_t::ok, std::string(request.param("path")));
+              });
+
+      prism::request_t deep;
+      deep.method = prism::method_t::get;
+      deep.path = "/files/css/app.css";
+      prism::response_t res = co_await app.handle(std::move(deep));
+      CHECK(res.status == prism::status_t::ok);
+      CHECK(res.body == "css/app.css");
+
+      prism::request_t empty_tail;
+      empty_tail.method = prism::method_t::get;
+      empty_tail.path = "/files";
+      prism::response_t res_empty = co_await app.handle(std::move(empty_tail));
+      CHECK(res_empty.status == prism::status_t::ok);
+      CHECK(res_empty.body.empty());
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
