@@ -165,4 +165,13 @@ response_t response_t::finished(status_t status, std::string content_type, std::
   response.headers.set("Content-Type", std::move(content_type));
   return response;
 }
+
+response_t response_t::streaming(status_t status, std::string content_type, body_source_t source)
+{
+  response_t response;
+  response.status = status;
+  response.headers.set("Content-Type", std::move(content_type));
+  response.body_stream = std::move(source);
+  return response;
+}
 } // namespace prism

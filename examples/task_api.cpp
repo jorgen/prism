@@ -151,12 +151,25 @@ vio::task_t<prism::response_t> remove_task(std::shared_ptr<store_t> store, prism
 
 vio::task_t<prism::response_t> export_csv(std::shared_ptr<store_t> store)
 {
-  std::string csv = "id,title,done\n";
-  for (const auto &task : store->tasks)
-  {
-    csv += std::to_string(task.id) + ',' + task.title + ',' + (task.done ? "true" : "false") + '\n';
-  }
-  co_return prism::response_t::finished(prism::status_t::ok, "text/csv", std::move(csv));
+  auto rows = std::make_shared<std::vector<task_item_t>>(store->tasks);
+  auto index = std::make_shared<std::size_t>(0);
+  auto header_sent = std::make_shared<bool>(false);
+  co_return prism::response_t::streaming(prism::status_t::ok, "text/csv",
+                                         [rows, index, header_sent]() -> vio::task_t<prism::body_chunk_t>
+                                         {
+                                           if (!*header_sent)
+                                           {
+                                             *header_sent = true;
+                                             co_return prism::body_chunk_t{"id,title,done\n", false};
+                                           }
+                                           if (*index >= rows->size())
+                                           {
+                                             co_return prism::body_chunk_t{"", true};
+                                           }
+                                           const task_item_t &task = (*rows)[(*index)++];
+                                           std::string row = std::to_string(task.id) + ',' + task.title + ',' + (task.done ? "true" : "false") + '\n';
+                                           co_return prism::body_chunk_t{std::move(row), false};
+                                         });
 }
 
 vio::task_t<prism::response_t> slow(prism::path_t<"ms", int> ms, prism::request_t request)

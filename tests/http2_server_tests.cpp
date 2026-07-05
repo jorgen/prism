@@ -80,8 +80,10 @@ vio::task_t<std::map<std::uint32_t, h2_response_t>> h2_exchange(vio::event_loop_
     co_return responses;
   }
 
+  constexpr std::uint32_t big_window = 16u * 1024 * 1024;
   std::string preamble(connection_preface);
-  preamble += serialize_settings({});
+  preamble += serialize_settings({{static_cast<std::uint16_t>(settings_id_t::initial_window_size), big_window}});
+  preamble += serialize_window_update(0, big_window);
   preamble += request_bytes;
   auto write_result = co_await vio::write_tcp(client, reinterpret_cast<const uint8_t *>(preamble.data()), preamble.size());
   if (!write_result.has_value())
@@ -189,6 +191,36 @@ vio::task_t<std::map<std::uint32_t, h2_response_t>> run_h2_case(vio::event_loop_
             co_await vio::sleep(*request.loop, std::chrono::milliseconds{40});
             co_return prism::response_t::text(prism::status_t::ok, "slept");
           });
+  app.get("/stream",
+          [](prism::request_t) -> vio::task_t<prism::response_t>
+          {
+            auto counter = std::make_shared<int>(0);
+            co_return prism::response_t::streaming(prism::status_t::ok, "text/plain",
+                                                   [counter]() -> vio::task_t<prism::body_chunk_t>
+                                                   {
+                                                     int n = (*counter)++;
+                                                     if (n >= 3)
+                                                     {
+                                                       co_return prism::body_chunk_t{"", true};
+                                                     }
+                                                     co_return prism::body_chunk_t{"chunk" + std::to_string(n) + ";", false};
+                                                   });
+          });
+  app.get("/bigstream",
+          [](prism::request_t) -> vio::task_t<prism::response_t>
+          {
+            auto counter = std::make_shared<int>(0);
+            co_return prism::response_t::streaming(prism::status_t::ok, "application/octet-stream",
+                                                   [counter]() -> vio::task_t<prism::body_chunk_t>
+                                                   {
+                                                     int n = (*counter)++;
+                                                     if (n >= 100)
+                                                     {
+                                                       co_return prism::body_chunk_t{"", true};
+                                                     }
+                                                     co_return prism::body_chunk_t{std::string(1000, 'x'), false};
+                                                   });
+          });
 
   auto addr = vio::ip4_addr("127.0.0.1", 0);
   REQUIRE(addr.has_value());
@@ -274,6 +306,38 @@ TEST_CASE("h2c returns 404 for an unknown route")
       std::string request = build_request(encoder, 1, "GET", "/missing", "");
       auto responses = co_await run_h2_case(loop, std::move(request), {1});
       CHECK(responses[1].status == 404);
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("h2c streams a response as interleaved DATA frames")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      hpack_encoder_t encoder;
+      std::string request = build_request(encoder, 1, "GET", "/stream", "");
+      auto responses = co_await run_h2_case(loop, std::move(request), {1});
+      CHECK(responses[1].status == 200);
+      CHECK(responses[1].body == "chunk0;chunk1;chunk2;");
+      CHECK(responses[1].complete);
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("h2c streams a large body across the flow-control window")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      hpack_encoder_t encoder;
+      std::string request = build_request(encoder, 1, "GET", "/bigstream", "");
+      auto responses = co_await run_h2_case(loop, std::move(request), {1});
+      CHECK(responses[1].status == 200);
+      CHECK(responses[1].body.size() == 100000);
+      CHECK(responses[1].complete);
       co_return 0;
     });
   CHECK(rc == 0);

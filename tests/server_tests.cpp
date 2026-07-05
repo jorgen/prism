@@ -75,6 +75,21 @@ vio::task_t<std::string> run_case(vio::event_loop_t &loop, prism::keepalive_opti
           {
             co_return prism::response_t::text(prism::status_t::ok, "pong");
           });
+  app.get("/stream",
+          [](prism::request_t) -> vio::task_t<prism::response_t>
+          {
+            auto counter = std::make_shared<int>(0);
+            co_return prism::response_t::streaming(prism::status_t::ok, "text/plain",
+                                                   [counter]() -> vio::task_t<prism::body_chunk_t>
+                                                   {
+                                                     int n = (*counter)++;
+                                                     if (n >= 3)
+                                                     {
+                                                       co_return prism::body_chunk_t{"", true};
+                                                     }
+                                                     co_return prism::body_chunk_t{"chunk" + std::to_string(n) + ";", false};
+                                                   });
+          });
 
   auto addr = vio::ip4_addr("127.0.0.1", 0);
   REQUIRE(addr.has_value());
@@ -225,6 +240,23 @@ TEST_CASE("app serves an HTTP/1.1 request end to end over TCP")
       CHECK(response.find("Content-Length: 4\r\n") != std::string::npos);
       CHECK(response.find("Connection: close\r\n") != std::string::npos);
       CHECK(response.ends_with("pong"));
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("app streams a chunked HTTP/1.1 response")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      std::string response = co_await run_case(loop, {}, "GET /stream HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
+      CHECK(response.find("Transfer-Encoding: chunked\r\n") != std::string::npos);
+      CHECK(response.find("Content-Length:") == std::string::npos);
+      CHECK(response.find("7\r\nchunk0;\r\n") != std::string::npos);
+      CHECK(response.find("7\r\nchunk2;\r\n") != std::string::npos);
+      CHECK(response.ends_with("0\r\n\r\n"));
       co_return 0;
     });
   CHECK(rc == 0);

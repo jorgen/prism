@@ -1,6 +1,7 @@
 #include "server.h"
 
 #include <chrono>
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -50,7 +51,37 @@ struct conn_ctx_t
   connection_t conn;
   bool writing = false;
   bool write_dead = false;
+  bool closing = false;
   std::size_t inflight = 0;
+  std::vector<std::coroutine_handle<>> flow_waiters;
+};
+
+template <typename Transport>
+void wake_flow(conn_ctx_t<Transport> &ctx)
+{
+  std::vector<std::coroutine_handle<>> waiters;
+  waiters.swap(ctx.flow_waiters);
+  for (std::coroutine_handle<> handle : waiters)
+  {
+    handle.resume();
+  }
+}
+
+template <typename Transport>
+struct flow_gate_t
+{
+  std::shared_ptr<conn_ctx_t<Transport>> ctx;
+  [[nodiscard]] bool await_ready() const noexcept
+  {
+    return ctx->write_dead || ctx->closing;
+  }
+  void await_suspend(std::coroutine_handle<> handle) const
+  {
+    ctx->flow_waiters.push_back(handle);
+  }
+  void await_resume() const noexcept
+  {
+  }
 };
 
 template <typename Transport>
@@ -78,6 +109,7 @@ void request_flush(std::shared_ptr<conn_ctx_t<Transport>> ctx)
       }
     }
     ctx->writing = false;
+    wake_flow(*ctx);
   }(std::move(ctx));
 }
 
@@ -103,7 +135,34 @@ void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> ctx, ready_request_t r
 
     response_t response = co_await ctx->router->dispatch(std::move(ready.request));
     status_t status = response.status;
-    ctx->conn.submit_response(stream_id, std::move(response), head);
+    if (response.body_stream)
+    {
+      ctx->conn.begin_streaming_response(stream_id, response, head);
+      request_flush(ctx);
+      body_source_t source = std::move(response.body_stream);
+      for (;;)
+      {
+        body_chunk_t chunk = co_await source();
+        if (ctx->conn.failed() || ctx->write_dead || ctx->closing)
+        {
+          break;
+        }
+        ctx->conn.push_stream_data(stream_id, chunk.data, chunk.last);
+        request_flush(ctx);
+        if (chunk.last)
+        {
+          break;
+        }
+        while (ctx->conn.stream_send_pending(stream_id) > 0 && !ctx->write_dead && !ctx->closing)
+        {
+          co_await flow_gate_t<Transport>{ctx};
+        }
+      }
+    }
+    else
+    {
+      ctx->conn.submit_response(stream_id, std::move(response), head);
+    }
     --ctx->inflight;
 
     if (access)
@@ -178,6 +237,8 @@ vio::task_t<void> run_connection(std::shared_ptr<conn_ctx_t<Transport>> ctx)
       break;
     }
   }
+  ctx->closing = true;
+  wake_flow(*ctx);
   co_return;
 }
 } // namespace

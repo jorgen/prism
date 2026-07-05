@@ -1,5 +1,6 @@
 #include "prism/detail/http1.h"
 
+#include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -302,5 +303,78 @@ std::string serialize_response(const response_t &response, bool keep_alive, bool
     out += response.body;
   }
   return out;
+}
+
+std::string serialize_streaming_headers(const response_t &response, bool keep_alive)
+{
+  std::string out;
+  out.reserve(256);
+
+  out += "HTTP/1.1 ";
+  out += std::to_string(static_cast<int>(response.status));
+  out += ' ';
+  out.append(reason_phrase(response.status));
+  out += "\r\n";
+
+  bool has_date = false;
+  bool has_server = false;
+  for (const auto &entry : response.headers.entries)
+  {
+    if (iequals(entry.name, "content-length") || iequals(entry.name, "connection") || iequals(entry.name, "transfer-encoding"))
+    {
+      continue;
+    }
+    if (iequals(entry.name, "date"))
+    {
+      has_date = true;
+    }
+    if (iequals(entry.name, "server"))
+    {
+      has_server = true;
+    }
+    out += entry.name;
+    out += ": ";
+    out += entry.value;
+    out += "\r\n";
+  }
+
+  out += "Transfer-Encoding: chunked\r\n";
+  out += "Connection: ";
+  out += keep_alive ? "keep-alive" : "close";
+  out += "\r\n";
+  if (!has_date)
+  {
+    out += "Date: ";
+    out += http_date();
+    out += "\r\n";
+  }
+  if (!has_server)
+  {
+    out += "Server: prism\r\n";
+  }
+  out += "\r\n";
+  return out;
+}
+
+std::string serialize_chunk(std::string_view data)
+{
+  if (data.empty())
+  {
+    return {};
+  }
+  char size_hex[20];
+  auto [ptr, ec] = std::to_chars(size_hex, size_hex + sizeof(size_hex), data.size(), 16);
+  std::string out;
+  out.reserve(data.size() + 20);
+  out.append(size_hex, ptr);
+  out += "\r\n";
+  out.append(data);
+  out += "\r\n";
+  return out;
+}
+
+std::string serialize_last_chunk()
+{
+  return "0\r\n\r\n";
 }
 } // namespace prism::detail

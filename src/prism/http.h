@@ -1,11 +1,14 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <vio/task.h>
 
 #include "status.h"
 
@@ -108,13 +111,29 @@ struct request_t
   [[nodiscard]] std::span<const std::byte> raw_body() const;
 };
 
+// A chunk yielded by a streaming body source. `last` marks the final chunk
+// (its `data` may be empty); the server then finishes the response.
+struct body_chunk_t
+{
+  std::string data;
+  bool last = false;
+};
+
+// A pull-based streaming body: the server calls it repeatedly, each call
+// returning the next chunk, until a chunk reports `last`. It may co_await async
+// work (file/db/upstream reads). Capture producer state by value or shared_ptr —
+// the source is stored in the response and outlives each pull.
+using body_source_t = std::function<vio::task_t<body_chunk_t>()>;
+
 struct response_t
 {
   status_t status = status_t::ok;
   headers_t headers;
   std::string body;
+  body_source_t body_stream;
 
   static response_t text(status_t status, std::string body);
   static response_t finished(status_t status, std::string content_type, std::string bytes);
+  static response_t streaming(status_t status, std::string content_type, body_source_t source);
 };
 } // namespace prism

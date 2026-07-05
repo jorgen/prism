@@ -704,6 +704,24 @@ bool connection_t::on_priority(const frame_t &frame)
   return true;
 }
 
+namespace
+{
+void fill_response_headers(std::vector<hpack_header_t> &out, const response_t &response)
+{
+  out.clear();
+  out.push_back({":status", std::to_string(static_cast<int>(response.status))});
+  for (const header_t &header : response.headers.entries)
+  {
+    std::string name = to_lower(header.name);
+    if (name.empty() || name.front() == ':' || is_connection_specific(name) || name == "content-length")
+    {
+      continue;
+    }
+    out.push_back({name, header.value});
+  }
+}
+} // namespace
+
 void connection_t::submit_response(std::uint32_t stream_id, response_t response, bool head)
 {
   stream_t *stream = find_stream(stream_id);
@@ -714,25 +732,53 @@ void connection_t::submit_response(std::uint32_t stream_id, response_t response,
   stream->has_response = true;
   stream->head = head || stream->head;
   stream->response_status = response.status;
-  stream->response_headers.clear();
-  stream->response_headers.push_back({":status", std::to_string(static_cast<int>(response.status))});
-
-  bool bodyless = is_bodyless_status(response.status);
-  for (const header_t &header : response.headers.entries)
-  {
-    std::string name = to_lower(header.name);
-    if (name.empty() || name.front() == ':' || is_connection_specific(name) || name == "content-length")
-    {
-      continue;
-    }
-    stream->response_headers.push_back({name, header.value});
-  }
+  fill_response_headers(stream->response_headers, response);
   stream->response_body = std::move(response.body);
-  if (!bodyless)
+  if (!is_bodyless_status(response.status))
   {
     stream->response_headers.push_back({"content-length", std::to_string(stream->response_body.size())});
   }
   stream->response_offset = 0;
+}
+
+void connection_t::begin_streaming_response(std::uint32_t stream_id, const response_t &response, bool head)
+{
+  stream_t *stream = find_stream(stream_id);
+  if (stream == nullptr || stream->state == stream_state_t::closed)
+  {
+    return;
+  }
+  stream->has_response = true;
+  stream->streaming = true;
+  stream->head = head || stream->head;
+  stream->response_status = response.status;
+  fill_response_headers(stream->response_headers, response);
+  stream->response_body.clear();
+  stream->response_offset = 0;
+}
+
+void connection_t::push_stream_data(std::uint32_t stream_id, std::string_view data, bool last)
+{
+  stream_t *stream = find_stream(stream_id);
+  if (stream == nullptr || stream->state == stream_state_t::closed)
+  {
+    return;
+  }
+  stream->response_body.append(data);
+  if (last)
+  {
+    stream->stream_ended = true;
+  }
+}
+
+std::size_t connection_t::stream_send_pending(std::uint32_t stream_id)
+{
+  stream_t *stream = find_stream(stream_id);
+  if (stream == nullptr || stream->state == stream_state_t::closed)
+  {
+    return 0;
+  }
+  return stream->response_body.size() - stream->response_offset;
 }
 
 void connection_t::reset_stream(std::uint32_t stream_id, error_code_t code)
@@ -775,7 +821,7 @@ void connection_t::pump()
     if (!stream.response_headers_sent)
     {
       std::string block = _encoder.encode(stream.response_headers);
-      bool no_body = is_bodyless_status(stream.response_status) || stream.head || stream.response_body.empty();
+      bool no_body = is_bodyless_status(stream.response_status) || stream.head || (!stream.streaming && stream.response_body.empty());
       emit_headers(stream.id, block, no_body);
       stream.response_headers_sent = true;
       if (no_body)
@@ -796,7 +842,8 @@ void connection_t::pump()
       std::int64_t chunk = std::min(available, static_cast<std::int64_t>(_remote_max_frame));
       std::int64_t remaining = static_cast<std::int64_t>(stream.response_body.size() - stream.response_offset);
       chunk = std::min(chunk, remaining);
-      bool last = stream.response_offset + static_cast<std::size_t>(chunk) == stream.response_body.size();
+      bool at_end = stream.response_offset + static_cast<std::size_t>(chunk) == stream.response_body.size();
+      bool last = at_end && (!stream.streaming || stream.stream_ended);
       std::string_view slice = std::string_view(stream.response_body).substr(stream.response_offset, static_cast<std::size_t>(chunk));
       _out += serialize_data(stream.id, slice, last);
       stream.response_offset += static_cast<std::size_t>(chunk);
@@ -808,6 +855,13 @@ void connection_t::pump()
         stream.state = stream_state_t::closed;
         stream.response_body.clear();
       }
+    }
+    if (stream.streaming && stream.stream_ended && !stream.response_done && stream.response_offset == stream.response_body.size())
+    {
+      _out += serialize_data(stream.id, {}, true);
+      stream.response_done = true;
+      stream.state = stream_state_t::closed;
+      stream.response_body.clear();
     }
   }
 }

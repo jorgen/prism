@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "../http.h"
 #include "../status.h"
@@ -49,4 +50,8 @@ private:
 };
 
 std::string serialize_response(const response_t &response, bool keep_alive, bool head_request);
+
+std::string serialize_streaming_headers(const response_t &response, bool keep_alive);
+std::string serialize_chunk(std::string_view data);
+std::string serialize_last_chunk();
 } // namespace prism::detail

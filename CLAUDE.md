@@ -137,9 +137,9 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
   — incl. DoS-hardening) and end-to-end tests (`http2_server_tests`, an in-process
   h2 client over a loopback socket).
 - `examples/` — `hello_prism.cpp` (minimal), `task_api.cpp` (in-memory CRUD REST
-  service), `hello_h2c.cpp` (cleartext HTTP/2, `listen` with
-  `protocol = h2c`), and `hello_h2tls.cpp` (HTTP/2 over TLS with ALPN via
-  `listen_tls`, cert/key from `argv`).
+  service; its `/tasks.csv` export uses `response_t::streaming`), `hello_h2c.cpp`
+  (cleartext HTTP/2, `listen` with `protocol = h2c`), and `hello_h2tls.cpp`
+  (HTTP/2 over TLS with ALPN via `listen_tls`, cert/key from `argv`).
 
 ## Architecture notes
 
@@ -285,8 +285,15 @@ unchanged: the seam is *build `request_t` → `router->dispatch` → encode
 - **Flow control**: connection + per-stream send windows honoured on emit (DATA
   chunked to `min(max_frame, stream_window, conn_window)`, deferred when a window
   is exhausted, resumed on WINDOW_UPDATE); the receive window is replenished per
-  DATA frame. Response bodies are buffered (`response_t::body`); true streaming is
-  future work.
+  DATA frame.
+- **Streaming responses**: a handler may return `response_t::streaming(status,
+  content_type, body_source_t)` where `body_source_t =
+  std::function<vio::task_t<body_chunk_t>()>` — the server pulls chunks until one
+  reports `last`. Works on both transports (see below). For h2 the streaming pump
+  runs in the per-stream handler task: pull a chunk → `push_stream_data` →
+  flush → wait on a driver flow-gate (resumed after WINDOW_UPDATE/flush progress)
+  until the buffer drains, giving true backpressure. Request bodies are still
+  buffered.
 - **Hardening** (caps in `h2_settings_t`, enforced in `connection_t`):
   `SETTINGS_MAX_CONCURRENT_STREAMS`, `max_header_list_size` (HPACK-bomb bound, also
   gates CONTINUATION accumulation), `max_body_bytes`, rapid-reset cap
@@ -322,7 +329,8 @@ Remaining:
   TLS drivers cannot bound a slow-reader write with `write_timeout` (they rely on
   vio's producer-side backpressure and close on failure). Plain-TCP write timeout
   works (cancellable `write_tcp`).
-- **HTTP/2 streaming bodies** — request/response bodies are fully buffered; a
-  streaming body abstraction (DATA via a producer callback) is future work.
+- **Streaming request bodies** — response streaming is done for both HTTP/1.1
+  (chunked) and HTTP/2 (`response_t::streaming`); request bodies are still fully
+  buffered (a streaming *inbound* body abstraction is future work).
 - **Per-stream HTTP/2 timeouts** — the h2 read loop uses a coarse connection-level
   idle/header timeout; true per-stream header/body deadlines are future work.

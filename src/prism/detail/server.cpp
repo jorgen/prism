@@ -146,8 +146,32 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
 
     pending.request.loop = &loop;
     response_t response = co_await router->dispatch(std::move(pending.request));
-    std::string wire = serialize_response(response, keep_alive, head_request);
-    auto outcome = co_await transport.write(std::move(wire), options.write_timeout);
+    write_outcome_t outcome;
+    if (response.body_stream && !head_request)
+    {
+      outcome = co_await transport.write(serialize_streaming_headers(response, keep_alive), options.write_timeout);
+      body_source_t source = std::move(response.body_stream);
+      while (outcome == write_outcome_t::ok)
+      {
+        body_chunk_t chunk = co_await source();
+        if (!chunk.data.empty())
+        {
+          outcome = co_await transport.write(serialize_chunk(chunk.data), options.write_timeout);
+        }
+        if (chunk.last)
+        {
+          if (outcome == write_outcome_t::ok)
+          {
+            outcome = co_await transport.write(serialize_last_chunk(), options.write_timeout);
+          }
+          break;
+        }
+      }
+    }
+    else
+    {
+      outcome = co_await transport.write(serialize_response(response, keep_alive, head_request), options.write_timeout);
+    }
 
     if (outcome == write_outcome_t::ok)
     {

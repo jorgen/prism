@@ -55,6 +55,8 @@ struct stream_t
   bool has_response = false;
   bool response_headers_sent = false;
   bool response_done = false;
+  bool streaming = false;
+  bool stream_ended = false;
   status_t response_status = status_t::ok;
   std::vector<hpack_header_t> response_headers;
   std::string response_body;
@@ -73,6 +75,9 @@ public:
   bool receive(std::string_view bytes, std::vector<ready_request_t> &ready);
 
   void submit_response(std::uint32_t stream_id, response_t response, bool head);
+  void begin_streaming_response(std::uint32_t stream_id, const response_t &response, bool head);
+  void push_stream_data(std::uint32_t stream_id, std::string_view data, bool last);
+  [[nodiscard]] std::size_t stream_send_pending(std::uint32_t stream_id);
   void reset_stream(std::uint32_t stream_id, error_code_t code);
 
   [[nodiscard]] bool has_output();
