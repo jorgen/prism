@@ -16,6 +16,22 @@ ctest --preset debug                       # or ./cmake-build-debug/tests/prism_
 
 Sanitizer presets: `asan`, `tsan`, `ubsan`, `msan` (see `CMakePresets.json`).
 
+### Windows (MSVC)
+
+From a Visual Studio developer shell (so `cl` and `ninja` are on `PATH`; run
+`vcvars64.bat` first if needed), use the `debug-msvc` preset:
+
+```bash
+cmake --preset debug-msvc
+cmake --build --preset debug-msvc
+ctest --preset debug-msvc
+```
+
+The default preset pins ninja to a homebrew path, so the `debug` preset is
+macOS-only; `debug-msvc` and `msvc-asan` are the Windows entry points. prism
+builds `-fno-exceptions/-fno-rtti` (MSVC `/EHs-c- /GR- -D_HAS_EXCEPTIONS=0`)
+with `/W4 /WX` on its own targets, and the whole suite passes with MSVC.
+
 ## Dependencies
 
 Fetched at configure time via [cmake-dep](https://github.com/jorgen/cmake-dep).
@@ -90,16 +106,40 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
       that turns a byte stream into `request_t`s (incremental, keep-alive,
       header/body size guards), plus `serialize_response` (`response_t` → wire,
       with authoritative `Content-Length`/`Connection`/`Date`).
-    - `server.h` / `server.cpp` — `serve` (cancellable accept loop) and
+    - `server.h` / `server.cpp` — `serve` (cancellable TCP accept loop) and
       `serve_connection` (per-connection coroutine: read → feed → dispatch →
-      write, with keep-alive and pipelining).
+      write, with keep-alive and pipelining), plus `serve_tls` (TLS accept loop
+      that finishes the handshake, reads the negotiated ALPN token, and routes to
+      the h2 or HTTP/1.1 driver). Both HTTP/1.1 and h2 per-connection drivers are
+      templated on a transport (`serve_connection_impl<Transport>`), so the same
+      code runs over plain TCP and TLS.
+    - `io_timeout.h` — shared transport layer: `read_outcome_t`/`write_outcome_t`,
+      the templated `read_with_timeout<Reader>` watchdog, and `tcp_transport_t` /
+      `tls_transport_t` (each exposes `start_reader()` / `read()` / `write()` over
+      vio's plain-TCP or TLS socket API).
+    - `http2/` — the hand-rolled HTTP/2 stack (no external HTTP/2 dep):
+      - `frame.h` / `frame.cpp` — binary frame codec: `frame_reader_t`
+        (incremental), per-type parse/serialize, the connection preface.
+      - `hpack.h` / `hpack.cpp` — HPACK (RFC 7541): `hpack_decoder_t` (static +
+        dynamic table, canonical Huffman generated from bit-lengths) and a simple
+        stateless `hpack_encoder_t`.
+      - `connection.h` / `connection.cpp` — `connection_t`, the transport-agnostic
+        stream state machine + flow control: `receive(bytes) → ready_request_t`s,
+        `submit_response`, `take_output` (flow-controlled frame emission). Holds
+        the DoS hardening caps.
+      - `server.h` / `server.cpp` — the async driver: read loop + single-flight
+        coalescing writer + per-stream detached dispatch, over TCP
+        (`serve_connection_h2`) or TLS (`serve_connection_h2_tls`).
 - `tests/` — doctest (`DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS`).
   Coroutine handlers are exercised via `vio::run`, which runs the event loop and
-  stops it automatically.
-- `examples/` — `hello_prism.cpp` (minimal) and `task_api.cpp` (an in-memory CRUD
-  REST service showing free-function handlers, JSON binding, an async handler, a
-  custom log sink, an optional port read from `argv`, and the
-  `VIO_MAIN(loop, argc, argv)` + `prism::run` entry point).
+  stops it automatically. HTTP/2 has unit tests (`http2_frame_tests`,
+  `http2_hpack_tests` — incl. RFC 7541 Appendix C vectors, `http2_connection_tests`
+  — incl. DoS-hardening) and end-to-end tests (`http2_server_tests`, an in-process
+  h2 client over a loopback socket).
+- `examples/` — `hello_prism.cpp` (minimal), `task_api.cpp` (in-memory CRUD REST
+  service), `hello_h2c.cpp` (cleartext HTTP/2, `listen` with
+  `protocol = h2c`), and `hello_h2tls.cpp` (HTTP/2 over TLS with ALPN via
+  `listen_tls`, cert/key from `argv`).
 
 ## Architecture notes
 
@@ -217,22 +257,72 @@ pass `nullptr`). prism logs: `listen` start / stop and bind failures
 malformed requests / header-body-write timeouts / `max_connections` sheds
 (`warn`), and connection accept / idle-close / read-error (`debug`).
 
+### HTTP/2 (hand-rolled: h2c + h2 over TLS)
+
+prism implements HTTP/2 from scratch — **no nghttp2 or other HTTP/2 dependency**;
+the frame codec + HPACK are `detail/http2/`. Everything above the transport
+(`request_t`/`response_t`/`router`/typed handlers/content-negotiation) is reused
+unchanged: the seam is *build `request_t` → `router->dispatch` → encode
+`response_t`*.
+
+- **Enabling it**: h2c (cleartext) via `keepalive_options_t::protocol =
+  protocol_t::h2c` passed to `listen`. h2-over-TLS via `app.listen_tls(loop, host,
+  port, ssl_config)` — the ALPN list defaults to `{"h2","http/1.1"}`;
+  `serve_tls` finishes the handshake, reads `ssl_server_client_alpn_selected`, and
+  routes `h2` to the h2 driver and everything else to the HTTP/1.1 driver (both
+  over the TLS transport). h2c is prior-knowledge only (the fixed connection
+  preface); no `Upgrade: h2c`.
+- **Connection driver** (`detail/http2/server.cpp`): one `shared_ptr` connection
+  context co-owned by the read loop + a single-flight coalescing **writer** + per
+  stream detached dispatch coroutines. Because HTTP/2 interleaves all streams'
+  frames into one serialized byte stream drained by exactly one writer, the vio
+  single-in-flight-write constraint is satisfied naturally. Handlers run
+  concurrently (`detached_task_t` per stream) and, on completion, `submit_response`
+  + trigger a flush; a WINDOW_UPDATE from the read loop also triggers a flush so
+  flow-control-blocked bodies resume. All coroutines take the context **by value
+  (`shared_ptr`)** — the vio dangling-`this` rule — so a suspended handler keeps the
+  session alive and a late completion after teardown drops cleanly.
+- **Flow control**: connection + per-stream send windows honoured on emit (DATA
+  chunked to `min(max_frame, stream_window, conn_window)`, deferred when a window
+  is exhausted, resumed on WINDOW_UPDATE); the receive window is replenished per
+  DATA frame. Response bodies are buffered (`response_t::body`); true streaming is
+  future work.
+- **Hardening** (caps in `h2_settings_t`, enforced in `connection_t`):
+  `SETTINGS_MAX_CONCURRENT_STREAMS`, `max_header_list_size` (HPACK-bomb bound, also
+  gates CONTINUATION accumulation), `max_body_bytes`, rapid-reset cap
+  (CVE-2023-44487), and a SETTINGS-flood cap — each maps to a GOAWAY /
+  `ENHANCE_YOUR_CALM` or `RST_STREAM`.
+- **Conformance**: passes the full **h2spec** suite (145 passed, 1 skipped, 0
+  failed) in both h2c and h2-over-TLS modes.
+
+### Conformance & hardening testing (tools)
+
+- **h2spec** (`github.com/summerwind/h2spec`, prebuilt Windows binary
+  `h2spec_windows_amd64.zip`): the RFC 7540/9113 + RFC 7541 conformance suite
+  (~146 cases). h2c is the default; add `-t -k` for TLS+ALPN. Run against a running
+  example: `h2spec -h 127.0.0.1 -p 8080 -P /health` (h2c) or
+  `h2spec -t -k -h 127.0.0.1 -p 8443 -P /health` (TLS). This is the primary gate.
+- **hpack-test-case** (`github.com/http2jp/hpack-test-case`) and
+  **http2-frame-test-case** — portable JSON wire-vector fixtures; the HPACK decoder
+  is also unit-tested against RFC 7541 Appendix C vectors directly.
+- **h2load** (nghttp2; WSL/Docker on Windows) — load/soak with many concurrent
+  streams: `h2load -n 100000 -c 100 -m 100 http://127.0.0.1:8080/`.
+- **DoS regression** — Rapid Reset (`secengjeff/rapidresetclient`), CONTINUATION
+  flood (CERT VU#421644), HPACK bomb — map onto the `h2_settings_t` caps above.
+- **Sanitizers** — the whole suite (incl. the concurrent h2 driver) is ASan-clean
+  via the `msvc-asan` preset.
+
 ### Hardening backlog
 
-Write/dispatch timeout, graceful drain, max concurrent connections, the
-header/body timeout split, and the zero-copy (move-in) cancellable write are all
-done — they drove the vio cancellation work above. Remaining:
-- **`408 Request Timeout` response** — a mid-request header/body timeout currently
-  just closes the connection; it could instead emit a `408` before closing.
-- **TLS write timeout** — see the TLS milestone below; vio's `socket_stream`
-  write path has no cancellation yet.
-
-### Next milestone — TLS
-
-The codec is transport-agnostic; only the I/O calls differ. Adding TLS means a
-`serve_connection`/`serve` variant over vio's `ssl_server_*` API (cert/key via
-`vio::ssl_config_t`, `ssl_server_client_write` takes a `uv_buf_t`) — the parse
-and serialize paths in `detail/http1.*` are reused unchanged. vio's TLS reader
-(`stream_reader_t`) now has `cancel()`, so the read-timeout watchdog extends to
-TLS as-is; the write-timeout will need the same cancellation on vio's TLS write
-path (`socket_stream` write), which does not exist yet.
+Remaining:
+- **`408 Request Timeout` response** — a mid-request HTTP/1.1 header/body timeout
+  currently just closes the connection; it could instead emit a `408` before
+  closing.
+- **TLS write timeout** — vio's TLS write path has no cancellation, so the h2/http1
+  TLS drivers cannot bound a slow-reader write with `write_timeout` (they rely on
+  vio's producer-side backpressure and close on failure). Plain-TCP write timeout
+  works (cancellable `write_tcp`).
+- **HTTP/2 streaming bodies** — request/response bodies are fully buffered; a
+  streaming body abstraction (DATA via a producer callback) is future work.
+- **Per-stream HTTP/2 timeouts** — the h2 read loop uses a coarse connection-level
+  idle/header timeout; true per-stream header/body deadlines are future work.

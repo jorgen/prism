@@ -19,6 +19,22 @@
       }
     },
     {
+      "name": "debug-msvc",
+      "displayName": "Debug (MSVC, Windows)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/cmake-build-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+    {
       "name": "asan",
       "displayName": "Debug with AddressSanitizer",
       "inherits": "default",
@@ -88,6 +104,10 @@
       "configurePreset": "debug"
     },
     {
+      "name": "debug-msvc",
+      "configurePreset": "debug-msvc"
+    },
+    {
       "name": "asan",
       "configurePreset": "asan"
     },
@@ -112,6 +132,10 @@
     {
       "name": "debug",
       "configurePreset": "debug"
+    },
+    {
+      "name": "debug-msvc",
+      "configurePreset": "debug-msvc"
     },
     {
       "name": "asan",

@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include <vio/ssl_config_t.h>
 #include <vio/task.h>
 
 #include "error.h"
@@ -157,6 +158,8 @@ public:
   }
 
   [[nodiscard]] vio::task_t<result_t<void>> listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel = nullptr, keepalive_options_t options = {});
+
+  [[nodiscard]] vio::task_t<result_t<void>> listen_tls(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::ssl_config_t config, vio::cancellation_t *cancel = nullptr, keepalive_options_t options = {});
 
 private:
   void record_route_error(std::optional<std::string> error)

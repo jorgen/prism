@@ -22,6 +22,10 @@ set(sources
         prism/version.cpp
         prism/detail/http1.cpp
         prism/detail/server.cpp
+        prism/detail/http2/frame.cpp
+        prism/detail/http2/hpack.cpp
+        prism/detail/http2/connection.cpp
+        prism/detail/http2/server.cpp
 )
 
 add_library(prism ${public_headers} ${sources})

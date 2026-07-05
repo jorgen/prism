@@ -157,9 +157,8 @@ vio::task_t<bool> hold_then_close(vio::event_loop_t &loop, int port, std::chrono
   token.cancel();
   co_await std::move(watchdog);
 
-  bool got = response.find("pong") != std::string::npos;
   co_await vio::sleep(loop, hold);
-  co_return got;
+  co_return response.find("pong") != std::string::npos;
 }
 
 struct probe_result_t
