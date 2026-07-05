@@ -227,7 +227,7 @@ vio::task_t<void> run_connection(std::shared_ptr<conn_ctx_t<Transport>> ctx)
     }
     request_flush(ctx);
 
-    if (!ok || ctx->conn.failed())
+    if (!ok || ctx->conn.failed() || ctx->write_dead)
     {
       emit(ctx->logger, log_level_t::warn, "http2 connection error; closing");
       break;

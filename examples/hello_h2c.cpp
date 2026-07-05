@@ -41,6 +41,11 @@ int main(int argc, char **argv)
               {
                 co_return prism::response_t::text(prism::status_t::ok, "ok");
               });
+      app.get("/big",
+              [](prism::request_t) -> vio::task_t<prism::response_t>
+              {
+                co_return prism::response_t::finished(prism::status_t::ok, "application/octet-stream", std::string(20000, 'x'));
+              });
 
       prism::keepalive_options_t options;
       options.protocol = prism::protocol_t::h2c;

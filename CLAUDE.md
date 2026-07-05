@@ -116,7 +116,11 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
     - `io_timeout.h` — shared transport layer: `read_outcome_t`/`write_outcome_t`,
       the templated `read_with_timeout<Reader>` watchdog, and `tcp_transport_t` /
       `tls_transport_t` (each exposes `start_reader()` / `read()` / `write()` over
-      vio's plain-TCP or TLS socket API).
+      vio's plain-TCP or TLS socket API). Both read and write are timeout-bounded
+      on both transports via a `cancellation_t` + watchdog `vio::sleep`; a
+      timed-out write resolves `vio_cancelled` and is treated as fatal (the driver
+      closes the connection, never retries — a cancelled TLS write may leave a
+      partial record on the wire).
     - `http2/` — the hand-rolled HTTP/2 stack (no external HTTP/2 dep):
       - `frame.h` / `frame.cpp` — binary frame codec: `frame_reader_t`
         (incremental), per-type parse/serialize, the connection preface.
@@ -299,16 +303,25 @@ unchanged: the seam is *build `request_t` → `router->dispatch` → encode
   gates CONTINUATION accumulation), `max_body_bytes`, rapid-reset cap
   (CVE-2023-44487), and a SETTINGS-flood cap — each maps to a GOAWAY /
   `ENHANCE_YOUR_CALM` or `RST_STREAM`.
-- **Conformance**: passes the full **h2spec** suite (145 passed, 1 skipped, 0
-  failed) in both h2c and h2-over-TLS modes.
+- **Conformance**: passes the full **h2spec** suite in both h2c and h2-over-TLS
+  modes — **146/146** against a large endpoint (`-P /big`, the 20 KB route in the
+  examples). Against a tiny endpoint (`-P /health`) h2spec reports 145 + 1
+  *skipped*: test 6.9.2.2 (shrink SETTINGS_INITIAL_WINDOW_SIZE to make a stream
+  window negative) needs a still-in-flight, window-limited response to set up, so
+  a 2-byte body makes h2spec skip it — not a failure, and it passes against `/big`.
 
 ### Conformance & hardening testing (tools)
 
 - **h2spec** (`github.com/summerwind/h2spec`, prebuilt Windows binary
   `h2spec_windows_amd64.zip`): the RFC 7540/9113 + RFC 7541 conformance suite
   (~146 cases). h2c is the default; add `-t -k` for TLS+ALPN. Run against a running
-  example: `h2spec -h 127.0.0.1 -p 8080 -P /health` (h2c) or
-  `h2spec -t -k -h 127.0.0.1 -p 8443 -P /health` (TLS). This is the primary gate.
+  example: `h2spec -h 127.0.0.1 -p 8080 -P /big` (h2c) or
+  `h2spec -t -k -h 127.0.0.1 -p 8443 -P /big` (TLS) — use a large endpoint
+  (`/big`) so the flow-control tests have a window-limited response to exercise
+  (`/health` makes 6.9.2.2 skip). This is the primary gate; it is cross-process,
+  which is also how TLS is validated end-to-end (an in-process same-loop TLS
+  client+server deadlocks on large-transfer backpressure, so there is no in-suite
+  TLS test — h2spec `-t` and `curl -k https://…` cover it).
 - **hpack-test-case** (`github.com/http2jp/hpack-test-case`) and
   **http2-frame-test-case** — portable JSON wire-vector fixtures; the HPACK decoder
   is also unit-tested against RFC 7541 Appendix C vectors directly.
@@ -325,10 +338,6 @@ Remaining:
 - **`408 Request Timeout` response** — a mid-request HTTP/1.1 header/body timeout
   currently just closes the connection; it could instead emit a `408` before
   closing.
-- **TLS write timeout** — vio's TLS write path has no cancellation, so the h2/http1
-  TLS drivers cannot bound a slow-reader write with `write_timeout` (they rely on
-  vio's producer-side backpressure and close on failure). Plain-TCP write timeout
-  works (cancellable `write_tcp`).
 - **Streaming request bodies** — response streaming is done for both HTTP/1.1
   (chunked) and HTTP/2 (`response_t::streaming`); request bodies are still fully
   buffered (a streaming *inbound* body abstraction is future work).

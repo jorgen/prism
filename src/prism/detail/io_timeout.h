@@ -106,13 +106,42 @@ inline vio::task_t<write_outcome_t> write_tcp_with_timeout(vio::event_loop_t &lo
   co_return write_outcome_t::failed;
 }
 
-inline vio::task_t<write_outcome_t> write_tls_bytes(vio::ssl_server_client_t &client, std::string wire)
+inline vio::task_t<write_outcome_t> write_tls_bytes(vio::event_loop_t &loop, vio::ssl_server_client_t &client, std::string wire, std::chrono::milliseconds timeout)
 {
   uv_buf_t buffer;
   buffer.base = wire.data();
   buffer.len = static_cast<decltype(buffer.len)>(wire.size());
-  auto written = co_await vio::ssl_server_client_write(client, buffer);
-  co_return written.has_value() ? write_outcome_t::ok : write_outcome_t::failed;
+
+  if (timeout <= std::chrono::milliseconds::zero())
+  {
+    auto untimed = co_await vio::ssl_server_client_write(client, buffer);
+    co_return untimed.has_value() ? write_outcome_t::ok : write_outcome_t::failed;
+  }
+
+  vio::cancellation_t token;
+  auto fut = vio::ssl_server_client_write(client, buffer, &token);
+  auto watchdog = [](vio::event_loop_t &el, vio::cancellation_t &write_token, std::chrono::milliseconds dur) -> vio::task_t<void>
+  {
+    auto fired = co_await vio::sleep(el, dur, &write_token);
+    if (fired.has_value() && !write_token.is_cancelled())
+    {
+      write_token.cancel();
+    }
+  }(loop, token, timeout);
+
+  auto written = co_await fut;
+  token.cancel();
+  co_await std::move(watchdog);
+
+  if (written.has_value())
+  {
+    co_return write_outcome_t::ok;
+  }
+  if (vio::is_cancelled(written.error()))
+  {
+    co_return write_outcome_t::timed_out;
+  }
+  co_return write_outcome_t::failed;
 }
 
 struct tcp_transport_t
@@ -167,8 +196,7 @@ struct tls_transport_t
 
   vio::task_t<write_outcome_t> write(std::string wire, std::chrono::milliseconds timeout)
   {
-    (void)timeout;
-    return write_tls_bytes(socket, std::move(wire));
+    return write_tls_bytes(loop, socket, std::move(wire), timeout);
   }
 };
 } // namespace prism::detail
