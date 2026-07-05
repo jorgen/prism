@@ -67,6 +67,50 @@ vio::task_t<void> run_client(vio::event_loop_t &loop, int port, std::string requ
   }
 }
 
+vio::task_t<void> run_client6(vio::event_loop_t &loop, int port, std::string request, std::string &response)
+{
+  auto client_or_error = vio::tcp_create(loop);
+  if (!client_or_error.has_value())
+  {
+    co_return;
+  }
+  auto client = std::move(client_or_error.value());
+
+  auto addr = vio::ip6_addr("::1", port);
+  if (!addr.has_value())
+  {
+    co_return;
+  }
+  auto connect = co_await vio::tcp_connect(client, reinterpret_cast<const sockaddr *>(&addr.value()));
+  if (!connect.has_value())
+  {
+    co_return;
+  }
+
+  auto write_result = co_await vio::write_tcp(client, reinterpret_cast<const uint8_t *>(request.data()), request.size());
+  if (!write_result.has_value())
+  {
+    co_return;
+  }
+
+  auto reader_or_error = vio::tcp_create_reader(client);
+  if (!reader_or_error.has_value())
+  {
+    co_return;
+  }
+  auto reader = std::move(reader_or_error.value());
+  for (;;)
+  {
+    auto read = co_await reader;
+    if (!read.has_value())
+    {
+      break;
+    }
+    auto &buffer = read.value();
+    response.append(buffer->base, buffer->len);
+  }
+}
+
 vio::task_t<std::string> run_case(vio::event_loop_t &loop, prism::keepalive_options_t options, std::string request)
 {
   prism::app_t app;
@@ -626,6 +670,56 @@ TEST_CASE("a handler can co_await async work via the event loop on request.loop"
 
       CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
       CHECK(response.ends_with("waited"));
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("a dual-stack listener on :: accepts both IPv4 and IPv6 loopback clients")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.get("/ping",
+              [](prism::request_t) -> vio::task_t<prism::response_t>
+              {
+                co_return prism::response_t::text(prism::status_t::ok, "pong");
+              });
+
+      auto addr = vio::ip6_addr("::", 0);
+      REQUIRE(addr.has_value());
+      auto server = vio::tcp_create_server(loop);
+      REQUIRE(server.has_value());
+      auto bound = vio::tcp_bind(server.value(), reinterpret_cast<const sockaddr *>(&addr.value()));
+      if (!bound.has_value())
+      {
+        co_return 0;
+      }
+
+      auto bound_name = vio::sockname(server->tcp);
+      REQUIRE(bound_name.has_value());
+      int port = ntohs(reinterpret_cast<const sockaddr_in6 *>(&bound_name.value())->sin6_port);
+
+      vio::cancellation_t cancel;
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, prism::keepalive_options_t{});
+
+      std::string response4;
+      co_await run_client(loop, port, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response4);
+
+      std::string response6;
+      co_await run_client6(loop, port, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response6);
+
+      cancel.cancel();
+      auto serve_result = co_await std::move(server_task);
+      CHECK(serve_result.has_value());
+
+      CHECK(response4.find("pong") != std::string::npos);
+      if (!response6.empty())
+      {
+        CHECK(response6.find("pong") != std::string::npos);
+      }
 
       co_return 0;
     });

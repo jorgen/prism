@@ -72,7 +72,7 @@ int main(int argc, char **argv)
 {
   std::string dist = argc > 1 ? argv[1] : "dist";
   std::uint16_t port = argc > 2 ? static_cast<std::uint16_t>(std::atoi(argv[2])) : 8080;
-  std::println("prism react server on http://127.0.0.1:{} — REST under /api, static SPA from '{}'", port, dist);
+  std::println("prism react server on http://localhost:{} — REST under /api, static SPA from '{}'", port, dist);
 
   return vio::run(
     [dist, port](vio::event_loop_t &loop) -> vio::task_t<int>
@@ -92,7 +92,7 @@ int main(int argc, char **argv)
       // index.html so React Router (client-side routing) works on reload.
       app.static_files("/", dist, /*spa_fallback=*/true);
 
-      auto result = co_await app.listen(loop, "127.0.0.1", port);
+      auto result = co_await app.listen(loop, "", port);
       if (!result.has_value())
       {
         std::println(stderr, "listen failed: {}", result.error().msg);

@@ -354,6 +354,13 @@ options.max_connections = 1024;   // concurrent  (0 = unlimited)
 co_return co_await prism::run(loop, "0.0.0.0", 8080, routes, options);
 ```
 
+The `host` argument selects the bind address by family: an IPv6 literal (`"::1"`,
+`"::"`) binds IPv6, anything else IPv4. An **empty string is the default and binds
+`::` as dual-stack**, so `127.0.0.1`, `::1`, and `localhost` all reach the server
+from one socket (falling back to `0.0.0.0` when IPv6 is unavailable). Prefer it
+for local dev: tools like Node/Vite resolve `localhost` to `::1`, which an
+IPv4-only listener would refuse.
+
 `prism::run` builds the app, runs your `configure(app_t&)` callback, and listens;
 `VIO_MAIN(loop, argc, argv) { ... }` (from vio) supplies `main` and the event
 loop. Prefer **free-function coroutine handlers** with state bound at

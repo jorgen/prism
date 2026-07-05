@@ -84,6 +84,14 @@ directory and port as arguments (defaults: `dist` and `8080`).
   paths (e.g. `/dashboard`), so client-side routing (React Router) survives a full
   page reload — while a missing *asset* (`/assets/x.js`) still returns 404.
 - Content types come from the file extension; `..` path traversal is rejected.
+- The server binds with an **empty host**, i.e. dual-stack `::` — it accepts IPv4
+  (`127.0.0.1`) and IPv6 (`::1`) alike, so the browser's `http://localhost` and
+  Vite's dev proxy both reach it regardless of how `localhost` resolves. The proxy
+  in `vite.config.ts` targets `127.0.0.1` explicitly (the most robust choice — it
+  works even against an IPv4-only server); with the dual-stack default, plain
+  `localhost` works too. (Node resolves `localhost` to `::1` first and does *not*
+  fall back, so a `localhost` proxy against an IPv4-only server would fail — hence
+  both the explicit proxy target and the dual-stack bind.)
 - In dev, the same `/api` contract is served by prism and reached through Vite's
   proxy, so dev and prod behave identically.
 

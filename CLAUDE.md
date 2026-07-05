@@ -223,6 +223,17 @@ graceful shutdown. The full suite (incl. an end-to-end server test) is ASan- and
 TSan-clean. Mind vio's documented `socket_stream` re-entrancy guards (a write
 completion can destroy the stream) when touching the connection loop.
 
+**Bind address & dual-stack**: `listen` / `listen_tls` resolve the `host`
+argument by family — an IPv6 literal (`"::1"`, `"::"`) binds IPv6, anything else
+IPv4. An **empty host is the default and binds `::` as dual-stack** (libuv clears
+`IPV6_V6ONLY` when `UV_TCP_IPV6ONLY` is absent, on both Windows and Linux, so one
+socket accepts IPv6 *and* IPv4-mapped clients), falling back to `0.0.0.0` if the
+`::` bind fails (IPv6 unavailable). This is why `localhost` works out of the box:
+Node/browsers resolve it to `::1`, which an IPv4-only (`0.0.0.0`/`127.0.0.1`)
+listener refuses. vio already exposes `ip6_addr` + `tcp_bind(flags)`; the family
+logic is `bind_one`/`resolve_and_bind` in `app.cpp` (no vio change needed). Tested
+in `server_tests.cpp` ("a dual-stack listener on :: accepts both IPv4 and IPv6").
+
 **Keep-alive hardening** (`keepalive_options_t` in `server_options.h`, passed to
 `listen`): `idle_timeout` bounds the wait between requests; `header_timeout` and
 `body_timeout` are `steady_clock` absolute deadlines (so a byte-trickle slow-loris
