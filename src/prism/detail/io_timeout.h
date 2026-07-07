@@ -120,6 +120,52 @@ inline vio::task_t<read_into_result_t> tcp_read_into_with_timeout(vio::event_loo
   co_return read_into_result_t{0, r.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error};
 }
 
+// TLS scatter read: SSL_read decrypts directly into the caller's buffer (no vio
+// queue buffer, no llhttp body_pending), the minimum copy count TLS allows
+// (kernel->ciphertext, ciphertext->rbio, decrypt->dst). Exact-fill: it resolves
+// only once dst is full or the stream errors/EOFs -- callers bound dst to the
+// remaining body so it never over-reads past the message.
+inline vio::task_t<read_into_result_t> tls_read_into_with_timeout(vio::event_loop_t &loop, vio::tls_server_client_reader_t &reader, std::span<std::byte> dst, std::chrono::milliseconds timeout)
+{
+  uv_buf_t buf;
+  buf.base = reinterpret_cast<char *>(dst.data());
+  buf.len = static_cast<decltype(buf.len)>(dst.size());
+
+  if (timeout <= std::chrono::milliseconds::zero())
+  {
+    auto r = co_await reader.read(buf);
+    if (r.has_value())
+    {
+      co_return read_into_result_t{dst.size(), read_outcome_t::data};
+    }
+    co_return read_into_result_t{0, r.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error};
+  }
+
+  vio::cancellation_t token;
+  auto watchdog = [](vio::event_loop_t &el, vio::tls_server_client_reader_t &rd, vio::cancellation_t &tok, std::chrono::milliseconds dur) -> vio::task_t<void>
+  {
+    auto fired = co_await vio::sleep(el, dur, &tok);
+    if (fired.has_value() && !tok.is_cancelled())
+    {
+      rd.cancel();
+    }
+  }(loop, reader, token, timeout);
+
+  auto r = co_await reader.read(buf);
+  token.cancel();
+  co_await std::move(watchdog);
+
+  if (r.has_value())
+  {
+    co_return read_into_result_t{dst.size(), read_outcome_t::data};
+  }
+  if (vio::is_cancelled(r.error()))
+  {
+    co_return read_into_result_t{0, read_outcome_t::timed_out};
+  }
+  co_return read_into_result_t{0, r.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error};
+}
+
 inline vio::task_t<write_outcome_t> write_tcp_with_timeout(vio::event_loop_t &loop, vio::tcp_t &client, std::string wire, std::chrono::milliseconds timeout)
 {
   if (timeout <= std::chrono::milliseconds::zero())
@@ -194,9 +240,10 @@ inline vio::task_t<write_outcome_t> write_tls_bytes(vio::event_loop_t &loop, vio
 
 struct tcp_transport_t
 {
-  // Plain TCP can land socket bytes directly in a caller buffer (true zero-copy)
-  // and be paused/resumed for explicit backpressure.
-  static constexpr bool zero_copy_reads = true;
+  // Plain TCP lands socket bytes directly in a caller buffer (true zero-copy) and
+  // has no built-in read flow control, so the streaming reader paces it via
+  // pause()/resume() (manual backpressure).
+  static constexpr bool manual_backpressure = true;
 
   vio::tcp_t socket;
   vio::event_loop_t &loop;
@@ -247,11 +294,11 @@ struct tcp_transport_t
 
 struct tls_transport_t
 {
-  // TLS only ever sees ciphertext at the socket; plaintext exists after decrypt,
-  // so read_into cannot be zero-copy. The h1 body reader uses the buffered
-  // (llhttp body_pending) path for TLS, and vio's TLS reader self-bounds via its
-  // internal ring buffer, so no explicit pause/resume is needed here.
-  static constexpr bool zero_copy_reads = false;
+  // TLS can't be zero-copy (libuv only sees ciphertext), but read_into still
+  // decrypts SSL_read output straight into the caller buffer -- the fewest copies
+  // TLS allows. vio's TLS reader self-bounds via its internal ring buffer, so no
+  // manual pause/resume is needed.
+  static constexpr bool manual_backpressure = false;
 
   vio::ssl_server_client_t socket;
   vio::event_loop_t &loop;
@@ -271,6 +318,11 @@ struct tls_transport_t
   vio::task_t<read_outcome_t> read(std::chrono::milliseconds timeout, vio::unique_buf_t &out)
   {
     return read_with_timeout(loop, *reader, timeout, out);
+  }
+
+  vio::task_t<read_into_result_t> read_into(std::span<std::byte> dst, std::chrono::milliseconds timeout)
+  {
+    return tls_read_into_with_timeout(loop, *reader, dst, timeout);
   }
 
   vio::task_t<write_outcome_t> write(std::string wire, std::chrono::milliseconds timeout)

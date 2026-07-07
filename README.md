@@ -291,8 +291,9 @@ app.post_stream("/upload",
   });
 ```
 
-`read_into` fills your buffer (**zero-copy on plain TCP** — the socket reads
-straight into it) and returns the byte count; alternatively `co_await
+`read_into` fills your buffer and returns the byte count — for Content-Length
+bodies it reads straight into your buffer (**zero-copy on plain TCP**; on TLS it
+decrypts directly into it, the fewest copies TLS allows). Alternatively `co_await
 request.body_stream().read_chunk()` yields owned chunks, or `read_all()` drains
 the rest into a `std::string`. It works on HTTP/1.1 and HTTP/2 with real
 backpressure (HTTP/2 replenishes its receive window only as you consume). Streaming

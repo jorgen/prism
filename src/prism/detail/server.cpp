@@ -70,37 +70,37 @@ public:
       finalize_status();
       co_return 0;
     }
-    if constexpr (Transport::zero_copy_reads)
+    // Identity (Content-Length) bodies read straight into the caller's buffer:
+    // zero-copy on plain TCP, decrypt-into-buffer on TLS. Bounded by the bytes
+    // still expected so it never reads past the message into the next request.
+    if (_content_length.has_value() && !_chunked)
     {
-      if (_content_length.has_value() && !_chunked)
+      if (_remaining == 0 || timed_out_now())
       {
-        if (_remaining == 0 || timed_out_now())
+        if (timed_out_now())
         {
-          if (timed_out_now())
-          {
-            _status = body_read_status_t::timed_out;
-          }
-          finalize_status();
-          co_return 0;
+          _status = body_read_status_t::timed_out;
         }
-        std::size_t want = std::min(dst.size(), _remaining);
-        auto r = co_await _transport->read_into(dst.subspan(0, want), remaining_timeout());
-        if (r.outcome == read_outcome_t::data && r.bytes > 0)
-        {
-          _codec->set_suppress_body_append(true);
-          feed_result_t fed = _codec->feed(reinterpret_cast<const char *>(dst.data()), r.bytes);
-          _codec->set_suppress_body_append(false);
-          if (fed == feed_result_t::error)
-          {
-            _status = body_read_status_t::aborted;
-            co_return 0;
-          }
-          _remaining -= r.bytes;
-          co_return std::size_t{r.bytes};
-        }
-        apply_read_outcome(r.outcome);
+        finalize_status();
         co_return 0;
       }
+      std::size_t want = std::min(dst.size(), _remaining);
+      auto r = co_await _transport->read_into(dst.subspan(0, want), remaining_timeout());
+      if (r.outcome == read_outcome_t::data && r.bytes > 0)
+      {
+        _codec->set_suppress_body_append(true);
+        feed_result_t fed = _codec->feed(reinterpret_cast<const char *>(dst.data()), r.bytes);
+        _codec->set_suppress_body_append(false);
+        if (fed == feed_result_t::error)
+        {
+          _status = body_read_status_t::aborted;
+          co_return 0;
+        }
+        _remaining -= r.bytes;
+        co_return std::size_t{r.bytes};
+      }
+      apply_read_outcome(r.outcome);
+      co_return 0;
     }
     co_await fill_pending();
     if (_codec->pending_body_size() > 0)
@@ -202,13 +202,13 @@ private:
         _status = body_read_status_t::timed_out;
         co_return;
       }
-      if constexpr (Transport::zero_copy_reads)
+      if constexpr (Transport::manual_backpressure)
       {
         _transport->resume();
       }
       vio::unique_buf_t buffer;
       auto outcome = co_await _transport->read(remaining_timeout(), buffer);
-      if constexpr (Transport::zero_copy_reads)
+      if constexpr (Transport::manual_backpressure)
       {
         _transport->pause();
       }
@@ -283,13 +283,13 @@ vio::task_t<bool> drain_request_body(request_codec_t &codec, Transport &transpor
     {
       co_return false;
     }
-    if constexpr (Transport::zero_copy_reads)
+    if constexpr (Transport::manual_backpressure)
     {
       transport.resume();
     }
     vio::unique_buf_t buffer;
     auto outcome = co_await transport.read(options.body_timeout, buffer);
-    if constexpr (Transport::zero_copy_reads)
+    if constexpr (Transport::manual_backpressure)
     {
       transport.pause();
     }

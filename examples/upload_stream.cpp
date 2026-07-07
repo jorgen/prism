@@ -9,6 +9,7 @@
 #include <prism/prism.h>
 
 #include <vio/run.h>
+#include <vio/ssl_config_t.h>
 
 namespace
 {
@@ -46,11 +47,15 @@ vio::task_t<prism::response_t> echo_len(prism::request_t request)
 
 int main(int argc, char **argv)
 {
-  const bool h2c = argc > 1 && std::string_view(argv[1]) == "h2c";
-  std::println("prism {} — streaming upload on http://127.0.0.1:8080 ({})", prism::version(), h2c ? "h2c" : "http/1.1");
+  const std::string_view mode = argc > 1 ? std::string_view(argv[1]) : std::string_view("http1");
+  const bool h2c = mode == "h2c";
+  const bool tls = mode == "tls";
+  const std::string cert = (tls && argc > 2) ? argv[2] : std::string();
+  const std::string key = (tls && argc > 3) ? argv[3] : std::string();
+  std::println("prism {} — streaming upload ({})", prism::version(), mode);
 
   return vio::run(
-    [h2c](vio::event_loop_t &loop) -> vio::task_t<int>
+    [h2c, tls, cert, key](vio::event_loop_t &loop) -> vio::task_t<int>
     {
       prism::app_t app;
       app.post_stream("/upload", upload);
@@ -65,6 +70,20 @@ int main(int argc, char **argv)
       if (h2c)
       {
         options.protocol = prism::protocol_t::h2c;
+      }
+      if (tls)
+      {
+        vio::ssl_config_t config;
+        config.cert_file = cert;
+        config.key_file = key;
+        config.alpn_protocols = {"http/1.1"};
+        auto result = co_await app.listen_tls(loop, "127.0.0.1", 8443, config, nullptr, options);
+        if (!result.has_value())
+        {
+          std::println(stderr, "listen_tls failed: {}", result.error().msg);
+          co_return 1;
+        }
+        co_return 0;
       }
       auto result = co_await app.listen(loop, "127.0.0.1", 8080, nullptr, options);
       if (!result.has_value())

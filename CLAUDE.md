@@ -381,9 +381,12 @@ running the handler), dispatches the handler early, and hands it a pull-based
 `request_t::body`. The reader (`http.h`) mirrors the output `body_source_t`:
 - `co_await read_chunk()` — owned `body_chunk_t` (`{data, last}`), `last` at end;
 - `co_await read_into(std::span<std::byte>)` — fills the handler's buffer, returns
-  bytes (0 = EOF); **zero-copy on plain TCP** (vio's `tcp_reader_t::read_into`
-  lands socket bytes straight into the caller buffer for identity/Content-Length
-  bodies), one copy for TLS/chunked;
+  bytes (0 = EOF). For identity (Content-Length) bodies it reads **directly into
+  the caller buffer**, bounded by the bytes still expected: **zero-copy on plain
+  TCP** (vio's `tcp_reader_t::read_into`), and on TLS it `SSL_read`s straight into
+  the buffer (vio's exact-fill `reader.read` — the fewest copies TLS allows, since
+  libuv only ever sees ciphertext). Chunked bodies use the buffered path (llhttp
+  must de-chunk);
 - `co_await read_all()` — drain to a `std::string`;
 - `length()` (Content-Length, `nullopt` if chunked), `at_end()`, `status()`
   (`body_read_status_t`: errors surface here, not thrown).
