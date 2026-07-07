@@ -370,6 +370,55 @@ unchanged: the seam is *build `request_t` → `router->dispatch` → encode
   window negative) needs a still-in-flight, window-limited response to set up, so
   a 2-byte body makes h2spec skip it — not a failure, and it passes against `/big`.
 
+### Streaming request bodies (opt-in, both transports)
+
+Large inbound bodies can be **streamed** instead of buffered whole. Register with
+`app.post_stream(pattern, handler)` (and `get_/put_/patch_/del_stream`): the route
+is flagged `streaming` on the `router_t`, the server resolves it at
+**headers-complete** (`router_t::resolve` / `is_streaming`, matching without
+running the handler), dispatches the handler early, and hands it a pull-based
+`request_t::body_reader` (`std::shared_ptr<request_body_t>`) instead of a filled
+`request_t::body`. The reader (`http.h`) mirrors the output `body_source_t`:
+- `co_await read_chunk()` — owned `body_chunk_t` (`{data, last}`), `last` at end;
+- `co_await read_into(std::span<std::byte>)` — fills the handler's buffer, returns
+  bytes (0 = EOF); **zero-copy on plain TCP** (vio's `tcp_reader_t::read_into`
+  lands socket bytes straight into the caller buffer for identity/Content-Length
+  bodies), one copy for TLS/chunked;
+- `co_await read_all()` — drain to a `std::string`;
+- `length()` (Content-Length, `nullopt` if chunked), `at_end()`, `status()`
+  (`body_read_status_t`: errors surface here, not thrown).
+
+Streaming routes take a raw `request_t` (typed `body_t<T>` stays buffered-only).
+
+- **HTTP/1.1** (`detail/http1.*`, `detail/server.cpp`): llhttp stays authoritative
+  (framing/keep-alive/pipelining). The codec gains a streaming mode
+  (`begin_streaming_body`/`take_header_request`/`take_body_into`/`take_body_chunk`/
+  `message_complete`); `http1_body_reader_t<Transport>` drives further
+  `transport.read`/`read_into` and `pause()`/`resume()` (real backpressure — libuv
+  isn't left reading ahead). After the handler returns, `serve_connection_impl`
+  drains the remainder up to `max_drain_bytes` (else closes) to keep the
+  connection alive. The reader holds raw codec/transport pointers valid only for
+  the inline `dispatch` — a streaming handler must not move `body_reader` into a
+  task outliving `dispatch`.
+- **HTTP/2** (`detail/http2/`): a streaming route is delivered at **END_HEADERS**
+  (before END_STREAM) with `ready_request_t::streaming`; DATA frames queue into
+  `stream_t::inbound_chunks` and the receive window is **consume-driven** — the
+  reader (`request_body_h2_t`) calls `connection_t::inbound_consume` (emit
+  WINDOW_UPDATE + flush) only as the handler takes bytes, so an unconsumed body is
+  bounded by the advertised window (backpressure). The reader parks on an
+  `inbound_gate_t` and is resumed by the driver via `collect_inbound_ready` after
+  each `receive`; an undrained stream is `RST_STREAM(NO_ERROR)`'d after the
+  response. The **buffered DATA path is kept byte-identical** (immediate
+  WINDOW_UPDATE) so h2spec conformance is unaffected.
+
+Caps are configurable in `keepalive_options_t`: `max_header_bytes` (default 64 KiB;
+h1 431, h2 `max_header_list_size`), `max_body_bytes` (buffered 413),
+`max_streaming_body_bytes` (bounds a streaming reader's buffering; 0 = unbounded),
+`max_drain_bytes`. Example: `examples/upload_stream.cpp`.
+
+Depends on vio's `tcp_reader_t::read_into` (zero-copy scatter read) and
+`pause()`/`resume()` (transient `uv_read_stop`/`start` for backpressure).
+
 ### Conformance & hardening testing (tools)
 
 - **h2spec** (`github.com/summerwind/h2spec`, prebuilt Windows binary
@@ -398,8 +447,8 @@ Remaining:
 - **`408 Request Timeout` response** — a mid-request HTTP/1.1 header/body timeout
   currently just closes the connection; it could instead emit a `408` before
   closing.
-- **Streaming request bodies** — response streaming is done for both HTTP/1.1
-  (chunked) and HTTP/2 (`response_t::streaming`); request bodies are still fully
-  buffered (a streaming *inbound* body abstraction is future work).
 - **Per-stream HTTP/2 timeouts** — the h2 read loop uses a coarse connection-level
   idle/header timeout; true per-stream header/body deadlines are future work.
+- **Streaming request bodies via typed handlers** — streaming routes take a raw
+  `request_t`; `body_t<T>` remains buffered-only (a future async `body_t` could
+  `co_await read_all()`).

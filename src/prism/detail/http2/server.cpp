@@ -1,10 +1,14 @@
 #include "server.h"
 
+#include <algorithm>
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -31,6 +35,20 @@ void emit(const std::shared_ptr<const logger_t> &logger, log_level_t level, std:
   }
 }
 
+inline h2_settings_t h2_settings_from(const keepalive_options_t &options)
+{
+  h2_settings_t settings;
+  if (options.max_body_bytes != 0)
+  {
+    settings.max_body_bytes = options.max_body_bytes;
+  }
+  if (options.max_header_bytes != 0)
+  {
+    settings.max_header_list_size = static_cast<std::uint32_t>(options.max_header_bytes);
+  }
+  return settings;
+}
+
 template <typename Transport>
 struct conn_ctx_t
 {
@@ -40,6 +58,7 @@ struct conn_ctx_t
     , router(std::move(r))
     , logger(std::move(l))
     , options(o)
+    , conn(h2_settings_from(o), [routes = router](method_t method, std::string_view path) { return routes->is_streaming(method, path); })
   {
   }
 
@@ -113,6 +132,133 @@ void request_flush(std::shared_ptr<conn_ctx_t<Transport>> state)
   }(std::move(state));
 }
 
+// Awaitable that parks the handler until the stream has a queued DATA chunk, has
+// ended, or was aborted (mirrors flow_gate_t for the inbound direction). The
+// driver resumes the parked handle via collect_inbound_ready after receive().
+template <typename Transport>
+struct inbound_gate_t
+{
+  std::shared_ptr<conn_ctx_t<Transport>> ctx;
+  std::uint32_t stream_id;
+  [[nodiscard]] bool await_ready() const noexcept
+  {
+    return ctx->write_dead || ctx->closing || ctx->conn.inbound_has_chunk(stream_id) || ctx->conn.inbound_ended(stream_id) || ctx->conn.inbound_aborted(stream_id);
+  }
+  void await_suspend(std::coroutine_handle<> handle) const
+  {
+    ctx->conn.set_inbound_waiter(stream_id, handle);
+  }
+  void await_resume() const noexcept
+  {
+  }
+};
+
+template <typename Transport>
+class request_body_h2_t final : public request_body_t
+{
+public:
+  request_body_h2_t(std::shared_ptr<conn_ctx_t<Transport>> ctx, std::uint32_t stream_id)
+    : _ctx(std::move(ctx))
+    , _stream_id(stream_id)
+    , _length(_ctx->conn.inbound_length(stream_id))
+  {
+  }
+
+  vio::task_t<body_chunk_t> read_chunk() override
+  {
+    for (;;)
+    {
+      std::string data;
+      bool last = false;
+      if (_ctx->conn.take_inbound_chunk(_stream_id, data, last))
+      {
+        _ctx->conn.inbound_consume(_stream_id, data.size());
+        request_flush(_ctx);
+        if (last)
+        {
+          _status = body_read_status_t::end;
+        }
+        co_return body_chunk_t{std::move(data), last};
+      }
+      if (_ctx->conn.inbound_aborted(_stream_id) || _ctx->write_dead || _ctx->closing)
+      {
+        _status = body_read_status_t::aborted;
+        co_return body_chunk_t{{}, true};
+      }
+      if (_ctx->conn.inbound_ended(_stream_id))
+      {
+        _status = body_read_status_t::end;
+        co_return body_chunk_t{{}, true};
+      }
+      co_await inbound_gate_t<Transport>{_ctx, _stream_id};
+    }
+  }
+
+  vio::task_t<std::size_t> read_into(std::span<std::byte> dst) override
+  {
+    if (dst.empty())
+    {
+      co_return 0;
+    }
+    while (_pending_offset == _pending.size())
+    {
+      body_chunk_t chunk = co_await read_chunk();
+      _pending = std::move(chunk.data);
+      _pending_offset = 0;
+      if (_pending.empty() && chunk.last)
+      {
+        co_return 0;
+      }
+    }
+    std::size_t n = std::min(dst.size(), _pending.size() - _pending_offset);
+    std::memcpy(dst.data(), _pending.data() + _pending_offset, n);
+    _pending_offset += n;
+    co_return std::size_t{n};
+  }
+
+  vio::task_t<std::string> read_all() override
+  {
+    std::string out;
+    if (_pending_offset < _pending.size())
+    {
+      out.append(_pending, _pending_offset);
+      _pending.clear();
+      _pending_offset = 0;
+    }
+    for (;;)
+    {
+      body_chunk_t chunk = co_await read_chunk();
+      out += chunk.data;
+      if (chunk.last)
+      {
+        break;
+      }
+    }
+    co_return std::move(out);
+  }
+
+  std::optional<std::size_t> length() const override
+  {
+    return _length;
+  }
+  bool at_end() const override
+  {
+    return _pending_offset == _pending.size() && _status == body_read_status_t::end;
+  }
+  body_read_status_t status() const override
+  {
+    return _status;
+  }
+
+private:
+  std::shared_ptr<conn_ctx_t<Transport>> _ctx;
+  std::uint32_t _stream_id;
+  std::optional<std::size_t> _length;
+  std::string _pending;
+  std::size_t _pending_offset = 0;
+  body_read_status_t _status = body_read_status_t::ok;
+};
+
 template <typename Transport>
 void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> state, ready_request_t request)
 {
@@ -122,6 +268,11 @@ void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> state, ready_request_t
     ready.request.loop = &ctx->loop;
     std::uint32_t stream_id = ready.stream_id;
     bool head = ready.head;
+    bool streaming = ready.streaming;
+    if (streaming)
+    {
+      ready.request.body_reader = std::make_shared<request_body_h2_t<Transport>>(ctx, stream_id);
+    }
 
     const bool access = ctx->logger && ctx->logger->enabled(log_level_t::info);
     method_t method = ready.request.method;
@@ -163,6 +314,15 @@ void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> state, ready_request_t
     {
       ctx->conn.submit_response(stream_id, std::move(response), head);
     }
+
+    // If the handler didn't consume the whole request body, RST the stream so
+    // the client stops uploading (legal after a complete response).
+    if (streaming && !ctx->conn.inbound_ended(stream_id) && !ctx->conn.inbound_aborted(stream_id))
+    {
+      ctx->conn.abort_inbound(stream_id, error_code_t::no_error);
+      request_flush(ctx);
+    }
+
     --ctx->inflight;
 
     if (access)
@@ -221,6 +381,16 @@ vio::task_t<void> run_connection(std::shared_ptr<conn_ctx_t<Transport>> ctx)
     {
       spawn_handler(ctx, std::move(request));
     }
+    // Resume any streaming-body readers whose stream got fresh DATA / END_STREAM
+    // / RST this round (mirrors wake_flow; resumed outside receive()'s frame loop).
+    {
+      std::vector<std::coroutine_handle<>> woken;
+      ctx->conn.collect_inbound_ready(woken);
+      for (std::coroutine_handle<> handle : woken)
+      {
+        handle.resume();
+      }
+    }
     if (ctx->options.max_requests != 0 && ctx->conn.streams_opened() >= ctx->options.max_requests)
     {
       ctx->conn.begin_goaway();
@@ -239,6 +409,15 @@ vio::task_t<void> run_connection(std::shared_ptr<conn_ctx_t<Transport>> ctx)
   }
   ctx->closing = true;
   wake_flow(*ctx);
+  // Unblock any streaming-body reader still parked so its detached handler can
+  // unwind (and release its ctx co-ownership).
+  ctx->conn.fail_all_inbound();
+  std::vector<std::coroutine_handle<>> woken;
+  ctx->conn.collect_inbound_ready(woken);
+  for (std::coroutine_handle<> handle : woken)
+  {
+    handle.resume();
+  }
   co_return;
 }
 } // namespace

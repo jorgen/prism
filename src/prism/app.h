@@ -55,6 +55,31 @@ public:
     _router.del(pattern, std::move(handler));
   }
 
+  // Streaming-body routes: the handler is dispatched once the headers are parsed
+  // and pulls the (possibly very large) body through request_t::body_reader,
+  // without prism buffering it whole. Streaming handlers take a raw request_t
+  // (typed body_t<T> extraction requires a fully-buffered body).
+  void get_stream(std::string_view pattern, handler_t handler)
+  {
+    _router.get_stream(pattern, std::move(handler));
+  }
+  void post_stream(std::string_view pattern, handler_t handler)
+  {
+    _router.post_stream(pattern, std::move(handler));
+  }
+  void put_stream(std::string_view pattern, handler_t handler)
+  {
+    _router.put_stream(pattern, std::move(handler));
+  }
+  void patch_stream(std::string_view pattern, handler_t handler)
+  {
+    _router.patch_stream(pattern, std::move(handler));
+  }
+  void del_stream(std::string_view pattern, handler_t handler)
+  {
+    _router.del_stream(pattern, std::move(handler));
+  }
+
   template <typename Handler, typename... Bound>
     requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
   void get(std::string_view pattern, Handler &&handler, Bound &&...bound)

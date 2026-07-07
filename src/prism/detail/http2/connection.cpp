@@ -60,8 +60,8 @@ std::uint32_t read_u32(const char *p)
 }
 } // namespace
 
-connection_t::connection_t(const h2_settings_t &local)
-  : _decoder(local.header_table_size), _local(local)
+connection_t::connection_t(const h2_settings_t &local, std::function<bool(method_t, std::string_view)> is_streaming)
+  : _decoder(local.header_table_size), _local(local), _is_streaming(std::move(is_streaming))
 {
   _decoder.set_protocol_max_dynamic_size(_local.header_table_size);
   _decoder.set_max_list_bytes(_local.max_header_list_size);
@@ -317,6 +317,7 @@ bool connection_t::on_headers(const frame_t &frame, std::vector<ready_request_t>
     stream.id = id;
     stream.state = frame.header.has_flag(frame_flag::end_stream) ? stream_state_t::half_closed_remote : stream_state_t::open;
     stream.send_window = static_cast<std::int64_t>(_remote_initial_window);
+    stream.recv_window = static_cast<std::int64_t>(_local.initial_window_size);
     if (_goaway_sent || active_streams() > _local.max_concurrent_streams || self_dependency)
     {
       queue_stream_reset(id, self_dependency ? error_code_t::protocol_error : error_code_t::refused_stream);
@@ -396,9 +397,35 @@ bool connection_t::finish_header_block(std::uint32_t stream_id, std::string_view
   }
   stream->headers = std::move(decoded);
   stream->headers_complete = true;
+  if (_is_streaming)
+  {
+    std::string method;
+    std::string path;
+    for (const hpack_header_t &header : stream->headers)
+    {
+      if (header.name == ":method")
+      {
+        method = header.value;
+      }
+      else if (header.name == ":path")
+      {
+        path = header.value;
+      }
+    }
+    std::size_t query = path.find('?');
+    std::string_view path_component = query == std::string::npos ? std::string_view(path) : std::string_view(path).substr(0, query);
+    if (_is_streaming(method_from_name(method), path_component))
+    {
+      stream->request_streaming = true;
+    }
+  }
   if (end_stream)
   {
     stream->state = stream_state_t::half_closed_remote;
+    stream->inbound_ended = true;
+  }
+  if (stream->request_streaming || end_stream)
+  {
     return deliver_request(*stream, ready);
   }
   return true;
@@ -512,11 +539,6 @@ bool connection_t::deliver_request(stream_t &stream, std::vector<ready_request_t
     queue_stream_reset(stream.id, error_code_t::protocol_error);
     return true;
   }
-  if (have_content_length && content_length != stream.body.size())
-  {
-    queue_stream_reset(stream.id, error_code_t::protocol_error);
-    return true;
-  }
   request.method = method_from_name(method);
   request.target = path;
   std::size_t query = path.find('?');
@@ -525,9 +547,25 @@ bool connection_t::deliver_request(stream_t &stream, std::vector<ready_request_t
   {
     request.headers.set("host", authority);
   }
-  request.body = std::move(stream.body);
   stream.head = method == "HEAD";
   stream.request_delivered = true;
+
+  if (stream.request_streaming)
+  {
+    if (have_content_length)
+    {
+      stream.content_length = content_length;
+    }
+    ready.push_back(ready_request_t{stream.id, std::move(request), stream.head, true});
+    return true;
+  }
+
+  if (have_content_length && content_length != stream.body.size())
+  {
+    queue_stream_reset(stream.id, error_code_t::protocol_error);
+    return true;
+  }
+  request.body = std::move(stream.body);
   ready.push_back(ready_request_t{stream.id, std::move(request), stream.head});
   return true;
 }
@@ -561,36 +599,82 @@ bool connection_t::on_data(const frame_t &frame, std::vector<ready_request_t> &r
   {
     return connection_error(error_code_t::flow_control_error);
   }
-  _conn_recv_window += framed;
-  if (framed > 0)
-  {
-    _out += serialize_window_update(0, static_cast<std::uint32_t>(framed));
-  }
 
   if (stream->state != stream_state_t::open)
   {
+    _conn_recv_window += framed;
+    if (framed > 0)
+    {
+      _out += serialize_window_update(0, static_cast<std::uint32_t>(framed));
+    }
     queue_stream_reset(id, error_code_t::stream_closed);
     return true;
   }
-  stream->body.append(data);
-  if (stream->body.size() > _local.max_body_bytes)
-  {
-    queue_stream_reset(id, error_code_t::enhance_your_calm);
-    return true;
-  }
+
   bool end_stream = frame.header.has_flag(frame_flag::end_stream);
-  if (!end_stream)
+
+  if (!stream->request_streaming)
   {
+    // Buffered route: replenish immediately (byte-identical to the pre-streaming
+    // behaviour, keeping h2spec's flow-control assertions satisfied).
+    _conn_recv_window += framed;
     if (framed > 0)
     {
-      _out += serialize_window_update(id, static_cast<std::uint32_t>(framed));
+      _out += serialize_window_update(0, static_cast<std::uint32_t>(framed));
+    }
+    stream->body.append(data);
+    if (stream->body.size() > _local.max_body_bytes)
+    {
+      queue_stream_reset(id, error_code_t::enhance_your_calm);
+      return true;
+    }
+    if (!end_stream)
+    {
+      if (framed > 0)
+      {
+        _out += serialize_window_update(id, static_cast<std::uint32_t>(framed));
+      }
+      return true;
+    }
+    stream->state = stream_state_t::half_closed_remote;
+    if (stream->headers_complete)
+    {
+      return deliver_request(*stream, ready);
     }
     return true;
   }
-  stream->state = stream_state_t::half_closed_remote;
-  if (stream->headers_complete)
+
+  // Streaming route (already delivered at END_HEADERS): consume-driven flow
+  // control. Do NOT replenish here -- the reader calls inbound_consume() as the
+  // handler takes bytes, which is the backpressure lever.
+  stream->recv_window -= framed;
+  if (stream->recv_window < 0)
   {
-    return deliver_request(*stream, ready);
+    stream->inbound_aborted = true;
+    queue_stream_reset(id, error_code_t::flow_control_error);
+    return true;
+  }
+  stream->inbound_total += data.size();
+  if (stream->content_length.has_value() && stream->inbound_total > *stream->content_length)
+  {
+    stream->inbound_aborted = true;
+    queue_stream_reset(id, error_code_t::protocol_error);
+    return true;
+  }
+  if (!data.empty())
+  {
+    stream->inbound_chunks.emplace_back(data);
+  }
+  if (end_stream)
+  {
+    if (stream->content_length.has_value() && stream->inbound_total != *stream->content_length)
+    {
+      stream->inbound_aborted = true;
+      queue_stream_reset(id, error_code_t::protocol_error);
+      return true;
+    }
+    stream->inbound_ended = true;
+    stream->state = stream_state_t::half_closed_remote;
   }
   return true;
 }
@@ -681,6 +765,8 @@ bool connection_t::on_rst_stream(const frame_t &frame)
     stream->response_body.clear();
     stream->headers.clear();
     stream->response_headers.clear();
+    stream->inbound_aborted = true;
+    stream->inbound_chunks.clear();
   }
   return true;
 }
@@ -702,6 +788,112 @@ bool connection_t::on_priority(const frame_t &frame)
     queue_stream_reset(frame.header.stream_id, error_code_t::protocol_error);
   }
   return true;
+}
+
+bool connection_t::inbound_has_chunk(std::uint32_t stream_id)
+{
+  stream_t *stream = find_stream(stream_id);
+  return stream != nullptr && !stream->inbound_chunks.empty();
+}
+
+bool connection_t::inbound_ended(std::uint32_t stream_id)
+{
+  stream_t *stream = find_stream(stream_id);
+  return stream == nullptr || stream->inbound_ended;
+}
+
+bool connection_t::inbound_aborted(std::uint32_t stream_id)
+{
+  stream_t *stream = find_stream(stream_id);
+  return stream == nullptr || stream->inbound_aborted;
+}
+
+bool connection_t::take_inbound_chunk(std::uint32_t stream_id, std::string &data_out, bool &last_out)
+{
+  stream_t *stream = find_stream(stream_id);
+  if (stream == nullptr || stream->inbound_chunks.empty())
+  {
+    return false;
+  }
+  data_out = std::move(stream->inbound_chunks.front());
+  stream->inbound_chunks.pop_front();
+  last_out = stream->inbound_chunks.empty() && stream->inbound_ended;
+  return true;
+}
+
+void connection_t::inbound_consume(std::uint32_t stream_id, std::size_t bytes)
+{
+  if (bytes == 0)
+  {
+    return;
+  }
+  std::int64_t delta = static_cast<std::int64_t>(bytes);
+  _conn_recv_window += delta;
+  if (_conn_recv_window > flow_control_max)
+  {
+    _conn_recv_window = flow_control_max;
+  }
+  _out += serialize_window_update(0, static_cast<std::uint32_t>(bytes));
+  stream_t *stream = find_stream(stream_id);
+  if (stream != nullptr && stream->state != stream_state_t::closed)
+  {
+    stream->recv_window += delta;
+    if (stream->recv_window > flow_control_max)
+    {
+      stream->recv_window = flow_control_max;
+    }
+    _out += serialize_window_update(stream_id, static_cast<std::uint32_t>(bytes));
+  }
+}
+
+void connection_t::set_inbound_waiter(std::uint32_t stream_id, std::coroutine_handle<> handle)
+{
+  stream_t *stream = find_stream(stream_id);
+  if (stream != nullptr)
+  {
+    stream->inbound_waiter = handle;
+  }
+}
+
+std::optional<std::size_t> connection_t::inbound_length(std::uint32_t stream_id)
+{
+  stream_t *stream = find_stream(stream_id);
+  if (stream == nullptr)
+  {
+    return std::nullopt;
+  }
+  return stream->content_length;
+}
+
+void connection_t::abort_inbound(std::uint32_t stream_id, error_code_t code)
+{
+  stream_t *stream = find_stream(stream_id);
+  if (stream == nullptr || stream->state == stream_state_t::closed)
+  {
+    return;
+  }
+  queue_stream_reset(stream_id, code);
+}
+
+void connection_t::collect_inbound_ready(std::vector<std::coroutine_handle<>> &out)
+{
+  for (auto &entry : _streams)
+  {
+    stream_t &stream = entry.second;
+    if (stream.inbound_waiter && (!stream.inbound_chunks.empty() || stream.inbound_ended || stream.inbound_aborted))
+    {
+      out.push_back(stream.inbound_waiter);
+      stream.inbound_waiter = {};
+    }
+  }
+}
+
+void connection_t::fail_all_inbound()
+{
+  for (auto &entry : _streams)
+  {
+    entry.second.inbound_aborted = true;
+  }
 }
 
 namespace

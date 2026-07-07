@@ -265,8 +265,39 @@ vio::task_t<prism::response_t> download(prism::request_t)
 
 prism frames this as chunked transfer-encoding on HTTP/1.1 and as flow-controlled
 DATA frames on HTTP/2 — with real backpressure either way, so a slow client can't
-force the server to buffer the whole body. (Request bodies are still fully
-buffered; inbound streaming is future work.)
+force the server to buffer the whole body.
+
+## Streaming request bodies
+
+Symmetrically, a very large **upload** can be consumed incrementally instead of
+buffered whole. Register the route with `post_stream` (also `get_/put_/patch_/
+del_stream`): the handler runs as soon as the headers are parsed and pulls the
+body through `request_t::body_stream()`.
+
+```cpp
+app.post_stream("/upload",
+  [](prism::request_t request) -> vio::task_t<prism::response_t>
+  {
+    std::array<std::byte, 64 * 1024> buffer{};
+    std::uint64_t total = 0;
+    prism::request_body_t &body = request.body_stream();
+    for (;;)
+    {
+      std::size_t n = co_await body.read_into(std::span<std::byte>(buffer.data(), buffer.size()));
+      if (n == 0) break;         // 0 == end of body
+      total += n;                // write_to_disk(buffer.data(), n), hash, forward, ...
+    }
+    co_return prism::response_t::text(prism::status_t::ok, std::to_string(total) + " bytes\n");
+  });
+```
+
+`read_into` fills your buffer (**zero-copy on plain TCP** — the socket reads
+straight into it) and returns the byte count; alternatively `co_await
+request.body_stream().read_chunk()` yields owned chunks, or `read_all()` drains
+the rest into a `std::string`. It works on HTTP/1.1 and HTTP/2 with real
+backpressure (HTTP/2 replenishes its receive window only as you consume). Streaming
+routes take a raw `request_t`; typed `body_t<T>` still expects a buffered body. See
+[`examples/upload_stream.cpp`](examples/upload_stream.cpp).
 
 ## HTTP/2
 

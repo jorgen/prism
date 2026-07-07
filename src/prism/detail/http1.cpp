@@ -1,10 +1,13 @@
 #include "prism/detail/http1.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <deque>
+#include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -24,13 +27,27 @@ struct codec_state_t
   std::size_t header_bytes = 0;
   bool in_progress = false;
   bool headers_complete = false;
+
+  std::size_t opt_max_body_bytes = 16u * 1024u * 1024u;
+  std::size_t opt_max_header_bytes = 64u * 1024u;
+  std::size_t opt_max_streaming_body_bytes = 0;
+
+  // Streaming mode (set via begin_streaming_body / preload_complete_body once a
+  // streaming route is matched at headers-complete): body bytes flow to
+  // body_pending for the reader instead of into current.request.body, and
+  // on_message_complete does not enqueue into `ready`.
+  bool streaming = false;
+  bool suppress_body_append = false; // zero-copy path: bytes already in the caller buffer
+  std::string body_pending;
+  bool message_complete = false;
+  bool cur_keep_alive = false;
+  bool cur_chunked = false;
+  bool cur_has_content_length = false;
+  std::size_t cur_content_length = 0;
 };
 
 namespace
 {
-constexpr std::size_t max_body_bytes = 16u * 1024u * 1024u;
-constexpr std::size_t max_header_bytes = 64u * 1024u;
-
 codec_state_t *state_of(llhttp_t *parser)
 {
   return static_cast<codec_state_t *>(parser->data);
@@ -86,6 +103,14 @@ int on_message_begin(llhttp_t *parser)
   state->header_bytes = 0;
   state->in_progress = true;
   state->headers_complete = false;
+  state->streaming = false;
+  state->suppress_body_append = false;
+  state->body_pending.clear();
+  state->message_complete = false;
+  state->cur_keep_alive = false;
+  state->cur_chunked = false;
+  state->cur_has_content_length = false;
+  state->cur_content_length = 0;
   return 0;
 }
 
@@ -108,7 +133,7 @@ int on_header_field(llhttp_t *parser, const char *at, std::size_t length)
 {
   codec_state_t *state = state_of(parser);
   state->header_bytes += length;
-  if (state->header_bytes > max_header_bytes)
+  if (state->opt_max_header_bytes != 0 && state->header_bytes > state->opt_max_header_bytes)
   {
     state->error = status_t::request_header_fields_too_large;
     return -1;
@@ -121,7 +146,7 @@ int on_header_value(llhttp_t *parser, const char *at, std::size_t length)
 {
   codec_state_t *state = state_of(parser);
   state->header_bytes += length;
-  if (state->header_bytes > max_header_bytes)
+  if (state->opt_max_header_bytes != 0 && state->header_bytes > state->opt_max_header_bytes)
   {
     state->error = status_t::request_header_fields_too_large;
     return -1;
@@ -141,15 +166,59 @@ int on_header_value_complete(llhttp_t *parser)
 
 int on_headers_complete(llhttp_t *parser)
 {
-  state_of(parser)->headers_complete = true;
+  codec_state_t *state = state_of(parser);
+  state->headers_complete = true;
+
+  const char *name = llhttp_method_name(static_cast<llhttp_method_t>(llhttp_get_method(parser)));
+  state->current.request.method = method_from_name(name != nullptr ? name : "");
+  state->cur_keep_alive = llhttp_should_keep_alive(parser) != 0;
+
+  const std::string *content_length = state->current.request.headers.find("Content-Length");
+  if (content_length != nullptr)
+  {
+    std::size_t value = 0;
+    const char *begin = content_length->data();
+    const char *end = begin + content_length->size();
+    if (std::from_chars(begin, end, value).ec == std::errc{})
+    {
+      state->cur_has_content_length = true;
+      state->cur_content_length = value;
+    }
+  }
+
+  const std::string *transfer_encoding = state->current.request.headers.find("Transfer-Encoding");
+  if (transfer_encoding != nullptr)
+  {
+    std::string lowered;
+    lowered.reserve(transfer_encoding->size());
+    for (char c : *transfer_encoding)
+    {
+      lowered.push_back(static_cast<char>((c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c));
+    }
+    state->cur_chunked = lowered.find("chunked") != std::string::npos;
+  }
   return 0;
 }
 
 int on_body(llhttp_t *parser, const char *at, std::size_t length)
 {
   codec_state_t *state = state_of(parser);
+  if (state->streaming)
+  {
+    if (state->suppress_body_append)
+    {
+      return 0;
+    }
+    state->body_pending.append(at, length);
+    if (state->opt_max_streaming_body_bytes != 0 && state->body_pending.size() > state->opt_max_streaming_body_bytes)
+    {
+      state->error = status_t::payload_too_large;
+      return -1;
+    }
+    return 0;
+  }
   state->body_bytes += length;
-  if (state->body_bytes > max_body_bytes)
+  if (state->opt_max_body_bytes != 0 && state->body_bytes > state->opt_max_body_bytes)
   {
     state->error = status_t::payload_too_large;
     return -1;
@@ -161,12 +230,18 @@ int on_body(llhttp_t *parser, const char *at, std::size_t length)
 int on_message_complete(llhttp_t *parser)
 {
   codec_state_t *state = state_of(parser);
+  state->headers_complete = false;
+  state->in_progress = false;
+  if (state->streaming)
+  {
+    state->message_complete = true;
+    return 0;
+  }
   const char *name = llhttp_method_name(static_cast<llhttp_method_t>(llhttp_get_method(parser)));
   state->current.request.method = method_from_name(name != nullptr ? name : "");
   state->current.keep_alive = llhttp_should_keep_alive(parser) != 0;
   state->ready.push_back(std::move(state->current));
   state->current = parsed_request_t{};
-  state->in_progress = false;
   return 0;
 }
 
@@ -241,6 +316,101 @@ bool request_codec_t::current_in_progress() const
 bool request_codec_t::current_headers_complete() const
 {
   return _impl->headers_complete;
+}
+
+void request_codec_t::set_limits(std::size_t max_header_bytes, std::size_t max_body_bytes, std::size_t max_streaming_body_bytes)
+{
+  _impl->opt_max_header_bytes = max_header_bytes;
+  _impl->opt_max_body_bytes = max_body_bytes;
+  _impl->opt_max_streaming_body_bytes = max_streaming_body_bytes;
+}
+
+method_t request_codec_t::current_method() const
+{
+  return _impl->current.request.method;
+}
+
+std::string_view request_codec_t::current_path() const
+{
+  return _impl->current.request.path;
+}
+
+request_t request_codec_t::take_header_request()
+{
+  request_t request = std::move(_impl->current.request);
+  _impl->current = parsed_request_t{};
+  return request;
+}
+
+bool request_codec_t::current_keep_alive() const
+{
+  return _impl->cur_keep_alive;
+}
+
+std::optional<std::size_t> request_codec_t::current_content_length() const
+{
+  if (_impl->cur_has_content_length)
+  {
+    return _impl->cur_content_length;
+  }
+  return std::nullopt;
+}
+
+bool request_codec_t::current_is_chunked() const
+{
+  return _impl->cur_chunked;
+}
+
+void request_codec_t::begin_streaming_body()
+{
+  _impl->streaming = true;
+  if (!_impl->current.request.body.empty())
+  {
+    _impl->body_pending.append(_impl->current.request.body);
+    _impl->current.request.body.clear();
+  }
+}
+
+void request_codec_t::preload_complete_body(std::string body)
+{
+  _impl->streaming = true;
+  _impl->body_pending = std::move(body);
+  _impl->message_complete = true;
+}
+
+void request_codec_t::set_suppress_body_append(bool suppress)
+{
+  _impl->suppress_body_append = suppress;
+}
+
+std::size_t request_codec_t::pending_body_size() const
+{
+  return _impl->body_pending.size();
+}
+
+std::size_t request_codec_t::take_body_into(std::span<std::byte> dst)
+{
+  const std::size_t n = std::min(dst.size(), _impl->body_pending.size());
+  std::memcpy(dst.data(), _impl->body_pending.data(), n);
+  _impl->body_pending.erase(0, n);
+  return n;
+}
+
+std::string request_codec_t::take_body_chunk()
+{
+  std::string chunk = std::move(_impl->body_pending);
+  _impl->body_pending.clear();
+  return chunk;
+}
+
+bool request_codec_t::message_complete() const
+{
+  return _impl->message_complete;
+}
+
+void request_codec_t::discard_pending_body()
+{
+  _impl->body_pending.clear();
 }
 
 std::string serialize_response(const response_t &response, bool keep_alive, bool head_request)

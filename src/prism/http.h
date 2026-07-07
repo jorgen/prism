@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -92,37 +95,88 @@ struct headers_t
   void set(std::string name, std::string value);
 };
 
-struct request_t
-{
-  method_t method = method_t::get;
-  std::string target; // path + optional query, e.g. "/users/42?verbose=1"
-  std::string path;   // path component only, e.g. "/users/42"
-  headers_t headers;
-  std::string body;
-
-  // Path parameters captured by the router, e.g. {"id": "42"} for "/users/{id}".
-  std::vector<header_t> params;
-
-  vio::event_loop_t *loop = nullptr;
-
-  [[nodiscard]] std::string_view param(std::string_view name) const;
-  [[nodiscard]] std::string query(std::string_view name) const;
-  [[nodiscard]] bool has_query(std::string_view name) const;
-  [[nodiscard]] std::span<const std::byte> raw_body() const;
-};
-
-// A chunk yielded by a streaming body source. `last` marks the final chunk
-// (its `data` may be empty); the server then finishes the response.
+// A chunk of body bytes. On the response side `last` marks the final outbound
+// chunk; on the request side a chunk with empty `data` and `last == true`
+// signals end-of-body.
 struct body_chunk_t
 {
   std::string data;
   bool last = false;
 };
 
-// A pull-based streaming body: the server calls it repeatedly, each call
-// returning the next chunk, until a chunk reports `last`. It may co_await async
-// work (file/db/upstream reads). Capture producer state by value or shared_ptr —
-// the source is stored in the response and outlives each pull.
+// Terminal condition of a streaming request body. Errors are reported here
+// rather than thrown (prism builds -fno-exceptions); the read methods return
+// end-like values (empty+last / 0) when status is not ok/end.
+enum class body_read_status_t : std::uint8_t
+{
+  ok,
+  end,
+  too_large,
+  timed_out,
+  aborted,
+};
+
+// A pull-based inbound body, handed to streaming-route handlers on request_t.
+// The handler drives it: read_chunk() yields prism-owned chunks; read_into()
+// fills the handler's own buffer (zero-copy on plain TCP); read_all() drains the
+// rest. Backed by transport-specific state that outlives each suspension, so it
+// is held by shared_ptr on request_t.
+class request_body_t
+{
+public:
+  virtual ~request_body_t() = default;
+
+  request_body_t(const request_body_t &) = delete;
+  request_body_t &operator=(const request_body_t &) = delete;
+
+  [[nodiscard]] virtual vio::task_t<body_chunk_t> read_chunk() = 0;
+  [[nodiscard]] virtual vio::task_t<std::size_t> read_into(std::span<std::byte> dst) = 0;
+  [[nodiscard]] virtual vio::task_t<std::string> read_all() = 0;
+
+  [[nodiscard]] virtual std::optional<std::size_t> length() const = 0;
+  [[nodiscard]] virtual bool at_end() const = 0;
+  [[nodiscard]] virtual body_read_status_t status() const = 0;
+
+protected:
+  request_body_t() = default;
+};
+
+struct request_t
+{
+  method_t method = method_t::get;
+  std::string target; // path + optional query, e.g. "/users/42?verbose=1"
+  std::string path;   // path component only, e.g. "/users/42"
+  headers_t headers;
+  std::string body; // fully buffered for non-streaming routes; empty when streaming
+
+  // Path parameters captured by the router, e.g. {"id": "42"} for "/users/{id}".
+  std::vector<header_t> params;
+
+  vio::event_loop_t *loop = nullptr;
+
+  // Set only for streaming routes (registered via app.*_stream). When present,
+  // `body` is empty and the handler pulls the body through this reader.
+  std::shared_ptr<request_body_t> body_reader;
+
+  [[nodiscard]] std::string_view param(std::string_view name) const;
+  [[nodiscard]] std::string query(std::string_view name) const;
+  [[nodiscard]] bool has_query(std::string_view name) const;
+  [[nodiscard]] std::span<const std::byte> raw_body() const;
+
+  [[nodiscard]] bool is_streaming() const
+  {
+    return static_cast<bool>(body_reader);
+  }
+  [[nodiscard]] request_body_t &body_stream() const
+  {
+    return *body_reader;
+  }
+};
+
+// A pull-based streaming response body: the server calls it repeatedly, each
+// call returning the next chunk, until a chunk reports `last`. It may co_await
+// async work (file/db/upstream reads). Capture producer state by value or
+// shared_ptr — the source is stored in the response and outlives each pull.
 using body_source_t = std::function<vio::task_t<body_chunk_t>()>;
 
 struct response_t

@@ -30,11 +30,12 @@ std::vector<std::string_view> split_segments(std::string_view path)
 }
 } // namespace
 
-void router_t::add(method_t method, std::string_view pattern, handler_t handler)
+void router_t::add(method_t method, std::string_view pattern, handler_t handler, bool streaming)
 {
   route_t route;
   route.method = method;
   route.handler = std::move(handler);
+  route.streaming = streaming;
   for (std::string_view seg : split_segments(pattern))
   {
     segment_t segment;
@@ -61,6 +62,52 @@ void router_t::add(method_t method, std::string_view pattern, handler_t handler)
   _routes.push_back(std::move(route));
 }
 
+bool router_t::segments_match(const route_t &route, const std::vector<std::string_view> &path_segments)
+{
+  const bool has_wildcard = !route.segments.empty() && route.segments.back().is_wildcard;
+  const size_t fixed = has_wildcard ? route.segments.size() - 1 : route.segments.size();
+
+  if (has_wildcard ? path_segments.size() < fixed : path_segments.size() != fixed)
+  {
+    return false;
+  }
+  for (size_t i = 0; i < fixed; ++i)
+  {
+    const segment_t &pattern_seg = route.segments[i];
+    if (!pattern_seg.is_param && pattern_seg.text != path_segments[i])
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+router_t::route_match_t router_t::resolve(method_t method, std::string_view path) const
+{
+  std::vector<std::string_view> path_segments = split_segments(path);
+  route_match_t result;
+  for (const auto &route : _routes)
+  {
+    if (!segments_match(route, path_segments))
+    {
+      continue;
+    }
+    result.path_matched = true;
+    if (route.method == method)
+    {
+      result.method_allowed = true;
+      result.streaming = route.streaming;
+      return result;
+    }
+  }
+  return result;
+}
+
+bool router_t::is_streaming(method_t method, std::string_view path) const
+{
+  return resolve(method, path).streaming;
+}
+
 vio::task_t<response_t> router_t::dispatch(request_t request) const
 {
   std::vector<std::string_view> path_segments = split_segments(request.path);
@@ -68,28 +115,13 @@ vio::task_t<response_t> router_t::dispatch(request_t request) const
 
   for (const auto &route : _routes)
   {
+    if (!segments_match(route, path_segments))
+    {
+      continue;
+    }
+
     const bool has_wildcard = !route.segments.empty() && route.segments.back().is_wildcard;
     const size_t fixed = has_wildcard ? route.segments.size() - 1 : route.segments.size();
-
-    if (has_wildcard ? path_segments.size() < fixed : path_segments.size() != fixed)
-    {
-      continue;
-    }
-
-    bool segments_match = true;
-    for (size_t i = 0; i < fixed; ++i)
-    {
-      const segment_t &pattern_seg = route.segments[i];
-      if (!pattern_seg.is_param && pattern_seg.text != path_segments[i])
-      {
-        segments_match = false;
-        break;
-      }
-    }
-    if (!segments_match)
-    {
-      continue;
-    }
 
     path_matched = true;
     if (route.method != request.method)

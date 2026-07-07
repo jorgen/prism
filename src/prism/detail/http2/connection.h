@@ -1,8 +1,12 @@
 #pragma once
 
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +34,7 @@ struct ready_request_t
   std::uint32_t stream_id = 0;
   request_t request;
   bool head = false;
+  bool streaming = false; // delivered at END_HEADERS; body pulled via a reader
 };
 
 enum class stream_state_t : std::uint8_t
@@ -63,16 +68,42 @@ struct stream_t
   std::size_t response_offset = 0;
 
   std::int64_t send_window = 0;
+
+  // Inbound streaming state (request_streaming routes only). DATA payloads queue
+  // here instead of into `body`; the reader drains them and drives
+  // consume-driven WINDOW_UPDATE. recv_window is our advertised per-stream
+  // receive credit, replenished only as the handler consumes.
+  bool request_streaming = false;
+  std::deque<std::string> inbound_chunks;
+  bool inbound_ended = false;
+  bool inbound_aborted = false;
+  std::coroutine_handle<> inbound_waiter{};
+  std::optional<std::size_t> content_length;
+  std::size_t inbound_total = 0;
+  std::int64_t recv_window = 0;
 };
 
 class connection_t
 {
 public:
-  explicit connection_t(const h2_settings_t &local = {});
+  explicit connection_t(const h2_settings_t &local = {}, std::function<bool(method_t, std::string_view)> is_streaming = {});
 
   void start();
 
   bool receive(std::string_view bytes, std::vector<ready_request_t> &ready);
+
+  // Inbound streaming surface (request_streaming routes). All are null-safe on an
+  // unknown/closed stream (reporting ended/aborted rather than dereferencing).
+  [[nodiscard]] bool inbound_has_chunk(std::uint32_t stream_id);
+  [[nodiscard]] bool inbound_ended(std::uint32_t stream_id);
+  [[nodiscard]] bool inbound_aborted(std::uint32_t stream_id);
+  bool take_inbound_chunk(std::uint32_t stream_id, std::string &data_out, bool &last_out);
+  void inbound_consume(std::uint32_t stream_id, std::size_t bytes);
+  void set_inbound_waiter(std::uint32_t stream_id, std::coroutine_handle<> handle);
+  [[nodiscard]] std::optional<std::size_t> inbound_length(std::uint32_t stream_id);
+  void abort_inbound(std::uint32_t stream_id, error_code_t code);
+  void collect_inbound_ready(std::vector<std::coroutine_handle<>> &out);
+  void fail_all_inbound(); // mark every stream aborted (connection teardown)
 
   void submit_response(std::uint32_t stream_id, response_t response, bool head);
   void begin_streaming_response(std::uint32_t stream_id, const response_t &response, bool head);
@@ -119,6 +150,7 @@ private:
   std::map<std::uint32_t, stream_t> _streams;
   std::string _out;
   h2_settings_t _local;
+  std::function<bool(method_t, std::string_view)> _is_streaming;
 
   std::string _preface;
   bool _preface_ok = false;
