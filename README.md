@@ -414,14 +414,20 @@ cmake --preset debug \
 When an option is `ON`, prism does not fetch that dependency's sources at all — it
 must be resolvable via `find_package`.
 
+These knobs are auto-declared by cmake-dep from each `CmDepFetchPackage` call
+(prefix derived from the project name). The same mechanism also gives every prism
+dependency a `PRISM_<DEP>_VERSION` / `PRISM_<DEP>_URL` / `PRISM_<DEP>_SHA256` cache
+variable, so you can fetch a different version/URL/hash without editing the
+packages file — e.g. `-DPRISM_LLHTTP_URL=… -DPRISM_LLHTTP_SHA256=…`.
+
 ### Overriding vio's dependencies through prism
 
 vio carries the same per-dependency toggles (`VIO_USE_SYSTEM_LIBUV`,
 `VIO_USE_SYSTEM_LIBRESSL`, `VIO_USE_SYSTEM_ADA`, `VIO_USE_SYSTEM_DOCTEST`,
-`VIO_USE_SYSTEM_CMAKERC`). Because prism builds bundled vio with
-`add_subdirectory`, **these pass straight through from the top-level configure
-line** — prism force-sets only `VIO_BUILD_*`, never the dependency toggles. So a
-prism consumer can override any of vio's dependencies without editing vio.
+`VIO_USE_SYSTEM_CMAKERC`). Because prism builds bundled vio via `CmDepAddPackage`
+— which force-sets only `VIO_BUILD_*`/`VIO_INSTALL`, never the dependency toggles —
+**these pass straight through from the top-level configure line**. So a prism
+consumer can override any of vio's dependencies without editing vio.
 
 Use a specific, pre-installed **LibreSSL** (e.g. a newer version):
 

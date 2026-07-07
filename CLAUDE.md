@@ -35,8 +35,8 @@ with `/W4 /WX` on its own targets, and the whole suite passes with MSVC.
 ## Dependencies
 
 Fetched at configure time via [cmake-dep](https://github.com/jorgen/cmake-dep).
-Pinned in `CMake/3rdPartyPackages.cmake` (URL + SHA256), added as subdirectories
-in `CMake/Build3rdParty.cmake`:
+Pinned in `CMake/3rdPartyPackages.cmake` (bare `CmDepFetchPackage(name version url
+SHA256=…)` calls), then added via `CmDepAddPackage` in `CMake/Build3rdParty.cmake`:
 
 - **vio** — built static (`VIO_BUILD_SHARED OFF`). Its headers are exposed
   PRIVATE upstream, so `Build3rdParty.cmake` re-exposes `${vio_SOURCE_DIR}/src`
@@ -62,30 +62,41 @@ SHA256 (`curl -sL <url> | shasum -a 256`).
 
 ### Togglable dependencies (pre-built / find_package)
 
-Every dependency can be consumed **pre-built** instead of fetched, via a per-dep
-option (default `OFF` = bundled): `PRISM_USE_SYSTEM_VIO`,
-`PRISM_USE_SYSTEM_STRUCTIFY`, `PRISM_USE_SYSTEM_DOCTEST`, `PRISM_USE_SYSTEM_LLHTTP`.
-When `ON`, `Build3rdParty.cmake` calls `find_package(<dep> CONFIG REQUIRED)`
-instead of `add_subdirectory`, and `3rdPartyPackages.cmake` skips that fetch
-(guarded by `if(NOT PRISM_USE_SYSTEM_<DEP>)`). All targets are linked by their
-**namespaced** name (`vio::vio`, `structify::structify`, `doctest::doctest`,
-`llhttp::llhttp`) so the same link line works bundled or system — bundled vio adds
-a `vio::vio` alias. (Watch for bare target names: `examples/CMakeLists.txt` and
-`tests/CMakeLists.txt` must use `vio::vio` / `doctest::doctest`, not `vio` /
-`doctest`, or the system build fails to link.)
+The per-dependency knobs are **auto-declared by cmake-dep** (from each
+`CmDepFetchPackage` call), prefixed by the project name (uppercased `PROJECT_NAME`
+→ `PRISM`): the toggles `PRISM_USE_SYSTEM_VIO`, `PRISM_USE_SYSTEM_STRUCTIFY`,
+`PRISM_USE_SYSTEM_DOCTEST`, `PRISM_USE_SYSTEM_LLHTTP` (default `OFF` = bundled),
+plus `PRISM_<DEP>_{VERSION,URL,SHA256}` cache overrides so any dep can be fetched
+at a different version/URL/hash without editing the packages file. When a toggle
+is `ON`, cmake-dep skips the fetch and `CmDepAddPackage` calls
+`find_package(<dep> CONFIG REQUIRED)` instead of `add_subdirectory`. All targets
+are linked by their **namespaced** name (`vio::vio`, `structify::structify`,
+`doctest::doctest`, `llhttp::llhttp`) so the same link line works bundled or
+system — bundled vio adds a `vio::vio` alias. (Watch for bare target names:
+`examples/CMakeLists.txt` and `tests/CMakeLists.txt` must use `vio::vio` /
+`doctest::doctest`, not `vio` / `doctest`, or the system build fails to link.)
+
+The prefix comes from `PROJECT_NAME` (which `project()` re-scopes per subtree), so
+bundled vio's own dependencies are declared as `VIO_*` knobs, not `PRISM_*` — the
+two families coexist in one cache.
 
 - **vio** (`PRISM_USE_SYSTEM_VIO`): requires a vio installed with `VIO_INSTALL=ON`
   **and built against system deps** — vio only emits a relocatable
   `find_package(vio)` config in that configuration (see vio's `CMake/vioConfig.cmake.in`,
   which `find_dependency`s libuv/LibreSSL/ada).
-- **Overriding vio's deps through bundled vio**: prism `add_subdirectory`s vio and
-  force-sets only `VIO_BUILD_*`/`VIO_INSTALL`, never the `VIO_USE_SYSTEM_*` toggles,
-  so a consumer can pass `-DVIO_USE_SYSTEM_LIBRESSL=ON` (etc.) or the
-  `-DVIO_<DEP>_VERSION/URL/SHA256` overrides straight through on the top-level
-  configure line. Documented in the README "Dependencies & overrides" section.
+- **Overriding vio's deps through bundled vio**: prism drives bundled vio via
+  `CmDepAddPackage(vio … OPTIONS VIO_BUILD_*=OFF VIO_INSTALL=OFF)`, forcing only
+  the build knobs, never the `VIO_USE_SYSTEM_*` toggles — so a consumer can pass
+  `-DVIO_USE_SYSTEM_LIBRESSL=ON` (etc.) or the `-DVIO_<DEP>_VERSION/URL/SHA256`
+  overrides straight through on the top-level configure line. Documented in the
+  README "Dependencies & overrides" section.
 
-vio mirrors this: `VIO_USE_SYSTEM_{LIBUV,LIBRESSL,ADA,DOCTEST,CMAKERC}` +
-per-dep `VIO_<DEP>_VERSION/URL/SHA256` cache vars + `VIO_INSTALL`.
+The override/toggle machinery lives entirely in **cmake-dep**:
+`CmDepFetchPackage` auto-declares `<PREFIX>_<DEP>_{VERSION,URL,SHA256}` +
+`option(<PREFIX>_USE_SYSTEM_<DEP>)` and gates the fetch; `CmDepAddPackage` owns the
+find-vs-build branch (`CONFIG`, `OPTIONS` build knobs, `PUBLIC_INCLUDE`,
+`SKIP_IF_TARGET`, `NO_SYSTEM_FIND`) reading the `${name}_USE_SYSTEM` signal. vio
+consumes the exact same mechanism with its own `VIO_` prefix.
 
 ## Conventions
 
