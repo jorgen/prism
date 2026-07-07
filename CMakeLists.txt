@@ -11,7 +11,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake")
 include(FetchContent)
 FetchContent_Declare(cmake-dep
     GIT_REPOSITORY https://github.com/jorgen/cmake-dep.git
-    GIT_TAG f61ffba
+    GIT_TAG 71abe2b188d28f433bf6436bcf5e5b0edc49b6ce
 )
 FetchContent_MakeAvailable(cmake-dep)
 list(APPEND CMAKE_MODULE_PATH "${cmake-dep_SOURCE_DIR}/cmake")
@@ -42,11 +42,6 @@ endif ()
 option(PRISM_BUILD_TESTS "Build tests" ON)
 option(PRISM_BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_SHARED_LIBS "Build shared libs" OFF)
-
-option(PRISM_USE_SYSTEM_VIO "Use a pre-built vio via find_package instead of the bundled fetch" OFF)
-option(PRISM_USE_SYSTEM_STRUCTIFY "Use a pre-built structify via find_package instead of the bundled fetch" OFF)
-option(PRISM_USE_SYSTEM_DOCTEST "Use a pre-built doctest via find_package instead of the bundled fetch" OFF)
-option(PRISM_USE_SYSTEM_LLHTTP "Use a pre-built llhttp via find_package instead of the bundled fetch" OFF)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 find_package(Threads)
