@@ -135,6 +135,34 @@ app.get("/tasks/{id}", get_task, store);    // runtime: verified at startup; can
 app.get<"/tasks/{id}">(get_task, store);    // static:  verified at compile time
 ```
 
+### Per-thread state
+
+For state that shouldn't be shared between threads — a DB connection, a reusable
+scratch buffer, an RNG — register a factory once on the app and take a
+`prism::per_thread<T>` parameter. Each thread gets **one** instance (created
+lazily), and it's a **mutable reference**; every handler that takes
+`per_thread<T>` shares that one per-thread instance (the factory is keyed by type
+on the app, so five handlers don't make five connections).
+
+```cpp
+app.provide_per_thread<Db>([] { return Db::connect(); });   // once, before listen()
+
+// mutable Db& via *, ->, or .get(); shared const config bound by reference
+vio::task_t<prism::response_t> get_user(const Config &cfg, prism::per_thread<Db> db,
+                                        prism::path_t<"id", int> id)
+{
+  auto row = db->query(cfg.table, id.value);   // db is this thread's Db, mutable
+  co_return prism::json::respond(prism::status_t::ok, row);
+}
+
+app.get("/users/{id}", get_user, std::cref(config));   // bound const& + per-thread Db
+```
+
+It's keyed off the connection's event loop, which is the per-thread identity (no
+`thread_local`). prism runs on a single loop today, so this is one instance now;
+it becomes genuinely one-per-thread the moment prism is run as multiple loops on
+multiple threads. See [`examples/per_thread_state.cpp`](examples/per_thread_state.cpp).
+
 ### The raw form
 
 You can always take the `request_t` and read things by hand:

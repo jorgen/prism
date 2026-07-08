@@ -16,6 +16,7 @@
 
 #include "codec.h"
 #include "content.h"
+#include "detail/thread_state.h"
 #include "error.h"
 #include "http.h"
 #include "json.h"
@@ -55,6 +56,36 @@ template <typename T>
 struct body_t
 {
   T value{};
+};
+
+// A handler parameter that resolves to this thread's instance of T, produced by a
+// factory registered with app.provide_per_thread<T>(...). Exposes a mutable
+// reference (get() / * / ->). One instance per thread (per event loop), shared by
+// every handler that takes per_thread<T>.
+template <typename T>
+class per_thread
+{
+public:
+  per_thread() = default;
+  explicit per_thread(T *instance)
+    : _instance(instance)
+  {
+  }
+  [[nodiscard]] T &get() const
+  {
+    return *_instance;
+  }
+  [[nodiscard]] T &operator*() const
+  {
+    return *_instance;
+  }
+  [[nodiscard]] T *operator->() const
+  {
+    return _instance;
+  }
+
+private:
+  T *_instance = nullptr;
 };
 
 template <typename T, typename = void>
@@ -224,6 +255,24 @@ struct arg_builder_t<request_t>
   static result_t<request_t> build(const request_t &request)
   {
     return request;
+  }
+};
+
+template <typename T>
+struct arg_builder_t<per_thread<T>>
+{
+  static result_t<per_thread<T>> build(const request_t &request)
+  {
+    if (request.factories == nullptr)
+    {
+      return fail(status_t::internal_server_error, "per-thread factory registry unavailable");
+    }
+    T *instance = request.factories->template find<T>(request.loop);
+    if (instance == nullptr)
+    {
+      return fail(status_t::internal_server_error, "no per-thread factory registered for this type");
+    }
+    return per_thread<T>{instance};
   }
 };
 

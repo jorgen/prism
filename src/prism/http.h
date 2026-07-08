@@ -22,6 +22,11 @@ class event_loop_t;
 
 namespace prism
 {
+namespace detail
+{
+class per_thread_registry_t;
+}
+
 enum class method_t : uint8_t
 {
   get,
@@ -157,6 +162,10 @@ struct request_t
   // Set only for streaming routes (registered via app.*_stream). When present,
   // `body` is empty and the handler pulls the body through this reader.
   std::shared_ptr<request_body_t> body_reader;
+
+  // Application per-thread factory registry, stamped by router_t::dispatch. Read
+  // by the per_thread<T> extractor to resolve this loop's instance.
+  const detail::per_thread_registry_t *factories = nullptr;
 
   [[nodiscard]] std::string_view param(std::string_view name) const;
   [[nodiscard]] std::string query(std::string_view name) const;

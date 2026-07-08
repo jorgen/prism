@@ -10,6 +10,9 @@ target_link_libraries(hello_h2c PRIVATE prism vio::vio)
 add_executable(upload_stream upload_stream.cpp)
 target_link_libraries(upload_stream PRIVATE prism vio::vio)
 
+add_executable(per_thread_state per_thread_state.cpp)
+target_link_libraries(per_thread_state PRIVATE prism vio::vio)
+
 add_executable(hello_h2tls hello_h2tls.cpp)
 target_link_libraries(hello_h2tls PRIVATE prism vio::vio)
 

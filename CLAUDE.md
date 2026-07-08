@@ -226,8 +226,24 @@ consumes the exact same mechanism with its own `VIO_` prefix.
   after. Contract: extractor / `request_t` params are taken **by value** (a
   reference qualifier is a static_assert), their value types are
   default-constructible, and bound state must be copyable (reused per request —
-  use a `shared_ptr`). Classic `handler_t` registration is unchanged; the typed
-  overload is SFINAE-constrained to non-`handler_t` callables.
+  use a `shared_ptr`, or `std::ref`/`std::cref` to bind a real reference to
+  app-owned state, const or not). Classic `handler_t` registration is unchanged;
+  the typed overload is SFINAE-constrained to non-`handler_t` callables.
+- **Per-thread state** (`per_thread<T>`): register a factory once on the app with
+  `app.provide_per_thread<T>(factory)`; a handler then takes a `prism::per_thread<T>`
+  extractor and gets a **mutable `T&`** (`*`/`->`/`get()`) to *this thread's*
+  instance. One instance per thread (keyed by `request.loop`, the per-thread
+  identity — no `thread_local`), **shared by every handler that takes
+  `per_thread<T>`** (the factory is type-keyed on the app, so N handlers → one
+  instance per thread, not N). The registry (`detail::per_thread_registry_t`,
+  `detail/thread_state.h`: type-keyed `per_thread_storage_t<T>` = factory +
+  `shared_mutex` + `map<event_loop_t*, unique_ptr<T>>`) rides on `router_t` as a
+  `shared_ptr`; `router_t::dispatch` stamps `request.factories` before running the
+  handler, so the extractor resolves it with no server/`app.cpp` plumbing. A
+  `per_thread<T>` for an unregistered `T` → 500. NB: prism is single-threaded
+  today (one loop), so this is one instance now; it becomes genuinely
+  one-per-thread once a multi-loop/thread runtime is added. Register factories
+  before `listen()`.
 - **Startup route verification**: registering a typed handler checks its
   compile-time `path_t<"name">` extractors against the runtime pattern; a handler
   binding a `{name}` the pattern does not declare (e.g. `path_t<"id">` against

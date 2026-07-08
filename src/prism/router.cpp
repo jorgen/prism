@@ -110,6 +110,7 @@ bool router_t::is_streaming(method_t method, std::string_view path) const
 
 vio::task_t<response_t> router_t::dispatch(request_t request) const
 {
+  request.factories = _factories.get();
   std::vector<std::string_view> path_segments = split_segments(request.path);
   bool path_matched = false;
 

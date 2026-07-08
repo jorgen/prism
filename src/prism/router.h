@@ -2,6 +2,7 @@
 
 #include <exception> // vio/task.h uses std::terminate without including this
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -9,6 +10,7 @@
 
 #include <vio/task.h>
 
+#include "detail/thread_state.h"
 #include "http.h"
 
 namespace prism
@@ -87,6 +89,15 @@ public:
   [[nodiscard]] route_match_t resolve(method_t method, std::string_view path) const;
   [[nodiscard]] bool is_streaming(method_t method, std::string_view path) const;
 
+  // Register a factory that produces one instance of T per thread (per event
+  // loop). Handlers receive it via a prism::per_thread<T> parameter. Call before
+  // listen(); one factory per type (last registration for a type wins).
+  template <typename T, typename F>
+  void provide_per_thread(F factory)
+  {
+    _factories->template provide<T>(std::move(factory));
+  }
+
 private:
   struct segment_t
   {
@@ -109,5 +120,6 @@ private:
   [[nodiscard]] static bool segments_match(const route_t &route, const std::vector<std::string_view> &path_segments);
 
   std::vector<route_t> _routes;
+  std::shared_ptr<detail::per_thread_registry_t> _factories = std::make_shared<detail::per_thread_registry_t>();
 };
 } // namespace prism

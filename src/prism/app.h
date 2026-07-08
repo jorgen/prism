@@ -152,6 +152,15 @@ public:
     _router.del(Pattern.view(), detail::make_typed_handler(std::forward<Handler>(handler), std::forward<Bound>(bound)...));
   }
 
+  // Register a factory producing one instance of T per thread (per event loop).
+  // Handlers receive a mutable reference via a prism::per_thread<T> parameter.
+  // Call during configure / before listen(); one factory per type.
+  template <typename T, typename F>
+  void provide_per_thread(F factory)
+  {
+    _router.provide_per_thread<T>(std::move(factory));
+  }
+
   [[nodiscard]] const router_t &router() const
   {
     return _router;
