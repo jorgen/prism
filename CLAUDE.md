@@ -288,7 +288,7 @@ listener refuses. vio already exposes `ip6_addr` + `tcp_bind(flags)`; the family
 logic is `bind_one`/`resolve_and_bind` in `app.cpp` (no vio change needed). Tested
 in `server_tests.cpp` ("a dual-stack listener on :: accepts both IPv4 and IPv6").
 
-**Keep-alive hardening** (`keepalive_options_t` in `server_options.h`, passed to
+**Keep-alive hardening** (`server_options_t` in `server_options.h`, passed to
 `listen`): `idle_timeout` bounds the wait between requests; `header_timeout` and
 `body_timeout` are `steady_clock` absolute deadlines (so a byte-trickle slow-loris
 cannot reset them) — the budget switches from header to body the moment the codec
@@ -321,12 +321,12 @@ in-flight connection coroutines keep it alive even if the `app_t` is destroyed.
 
 ### Multi-worker runtime (SO_REUSEPORT)
 
-`keepalive_options_t::worker_threads` (default `1`) scales the server across
-cores. `1` keeps the single-loop model exactly. `> 1` runs that many event loops
-on that many threads — the caller loop is **worker 0**; prism spawns N-1 more via
-`vio::thread_with_event_loop_t` — each binding the *same* port with
-`UV_TCP_REUSEPORT` (SO_REUSEPORT), so the kernel load-balances accepts. `0` =
-`hardware_concurrency()` (floor 1). Because `per_thread<T>` is keyed by
+`server_options_t::worker_threads` scales the server across cores. It **defaults
+to `0` = `hardware_concurrency()`** (floor 1), so prism is multi-threaded out of
+the box; `1` forces the single-loop model exactly. Any value runs that many event
+loops on that many threads — the caller loop is **worker 0**; prism spawns the
+rest via `vio::thread_with_event_loop_t` — each binding the *same* port with
+`UV_TCP_REUSEPORT` (SO_REUSEPORT), so the kernel load-balances accepts. Because `per_thread<T>` is keyed by
 `request.loop`, one worker per thread ⇒ one instance per thread, no code change.
 This is entirely prism-side: `vio::tcp_bind` already forwards `uv_tcp_bind` flags,
 so no vio change was needed. The family/dual-stack decision is made once in
@@ -384,7 +384,7 @@ the frame codec + HPACK are `detail/http2/`. Everything above the transport
 unchanged: the seam is *build `request_t` → `router->dispatch` → encode
 `response_t`*.
 
-- **Enabling it**: h2c (cleartext) via `keepalive_options_t::protocol =
+- **Enabling it**: h2c (cleartext) via `server_options_t::protocol =
   protocol_t::h2c` passed to `listen`. h2-over-TLS via `app.listen_tls(loop, host,
   port, ssl_config)` — the ALPN list defaults to `{"h2","http/1.1"}`;
   `serve_tls` finishes the handshake, reads `ssl_server_client_alpn_selected`, and
@@ -469,7 +469,7 @@ Streaming routes take a raw `request_t` (typed `body_t<T>` stays buffered-only).
   response. The **buffered DATA path is kept byte-identical** (immediate
   WINDOW_UPDATE) so h2spec conformance is unaffected.
 
-Caps are configurable in `keepalive_options_t`: `max_header_bytes` (default 64 KiB;
+Caps are configurable in `server_options_t`: `max_header_bytes` (default 64 KiB;
 h1 431, h2 `max_header_list_size`), `max_body_bytes` (buffered 413),
 `max_streaming_body_bytes` (bounds a streaming reader's buffering; 0 = unbounded),
 `max_drain_bytes`. Example: `examples/upload_stream.cpp`.

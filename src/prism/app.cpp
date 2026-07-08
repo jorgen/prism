@@ -121,7 +121,7 @@ void app_t::static_files(std::string_view url_prefix, std::string root, bool spa
   _router.get(pattern, static_file_handler(std::move(root), "index.html", spa_fallback));
 }
 
-vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel, keepalive_options_t options)
+vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel, server_options_t options)
 {
   if (!_route_errors.empty())
   {
@@ -172,7 +172,7 @@ vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_v
                                  drained.count_down();
                                  return;
                                }
-                               [](vio::tcp_server_t bound_server, std::shared_ptr<const router_t> routes_ref, std::shared_ptr<logger_t> logger_ref, vio::cancellation_t *worker_cancel_ref, keepalive_options_t options_ref, std::latch *drained_ref) -> vio::detached_task_t
+                               [](vio::tcp_server_t bound_server, std::shared_ptr<const router_t> routes_ref, std::shared_ptr<logger_t> logger_ref, vio::cancellation_t *worker_cancel_ref, server_options_t options_ref, std::latch *drained_ref) -> vio::detached_task_t
                                {
                                  co_await prism::detail::serve(std::move(bound_server), std::move(routes_ref), std::move(logger_ref), worker_cancel_ref, options_ref);
                                  drained_ref->count_down();
@@ -206,7 +206,7 @@ vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_v
   co_return result;
 }
 
-vio::task_t<result_t<void>> app_t::listen_tls(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::ssl_config_t config, vio::cancellation_t *cancel, keepalive_options_t options)
+vio::task_t<result_t<void>> app_t::listen_tls(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::ssl_config_t config, vio::cancellation_t *cancel, server_options_t options)
 {
   if (!_route_errors.empty())
   {
@@ -276,7 +276,7 @@ vio::task_t<result_t<void>> app_t::listen_tls(vio::event_loop_t &loop, std::stri
                                  drained.count_down();
                                  return;
                                }
-                               [](vio::ssl_server_t tls_server_ref, std::shared_ptr<const router_t> routes_ref, std::shared_ptr<logger_t> logger_ref, vio::cancellation_t *worker_cancel_ref, keepalive_options_t options_ref, std::latch *drained_ref) -> vio::detached_task_t
+                               [](vio::ssl_server_t tls_server_ref, std::shared_ptr<const router_t> routes_ref, std::shared_ptr<logger_t> logger_ref, vio::cancellation_t *worker_cancel_ref, server_options_t options_ref, std::latch *drained_ref) -> vio::detached_task_t
                                {
                                  co_await prism::detail::serve_tls(std::move(tls_server_ref), std::move(routes_ref), std::move(logger_ref), worker_cancel_ref, options_ref);
                                  drained_ref->count_down();
@@ -310,7 +310,7 @@ vio::task_t<result_t<void>> app_t::listen_tls(vio::event_loop_t &loop, std::stri
   co_return result;
 }
 
-vio::task_t<int> run(vio::event_loop_t &loop, std::string_view host, uint16_t port, std::function<void(app_t &)> configure, keepalive_options_t options)
+vio::task_t<int> run(vio::event_loop_t &loop, std::string_view host, uint16_t port, std::function<void(app_t &)> configure, server_options_t options)
 {
   app_t app;
   if (configure)

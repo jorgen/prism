@@ -35,7 +35,7 @@ void emit(const std::shared_ptr<const logger_t> &logger, log_level_t level, std:
   }
 }
 
-inline h2_settings_t h2_settings_from(const keepalive_options_t &options)
+inline h2_settings_t h2_settings_from(const server_options_t &options)
 {
   h2_settings_t settings;
   if (options.max_body_bytes != 0)
@@ -52,7 +52,7 @@ inline h2_settings_t h2_settings_from(const keepalive_options_t &options)
 template <typename Transport>
 struct conn_ctx_t
 {
-  conn_ctx_t(Transport transport_arg, vio::event_loop_t &el, std::shared_ptr<const router_t> r, std::shared_ptr<const logger_t> l, keepalive_options_t o)
+  conn_ctx_t(Transport transport_arg, vio::event_loop_t &el, std::shared_ptr<const router_t> r, std::shared_ptr<const logger_t> l, server_options_t o)
     : transport(std::move(transport_arg))
     , loop(el)
     , router(std::move(r))
@@ -66,7 +66,7 @@ struct conn_ctx_t
   vio::event_loop_t &loop;
   std::shared_ptr<const router_t> router;
   std::shared_ptr<const logger_t> logger;
-  keepalive_options_t options;
+  server_options_t options;
   connection_t conn;
   bool writing = false;
   bool write_dead = false;
@@ -422,7 +422,7 @@ vio::task_t<void> run_connection(std::shared_ptr<conn_ctx_t<Transport>> ctx)
 }
 } // namespace
 
-vio::task_t<void> serve_connection_h2(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, keepalive_options_t options)
+vio::task_t<void> serve_connection_h2(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
   tcp_transport_t transport{std::move(client), loop, std::nullopt};
@@ -430,7 +430,7 @@ vio::task_t<void> serve_connection_h2(vio::tcp_t client, std::shared_ptr<const r
   co_await run_connection(ctx);
 }
 
-vio::task_t<void> serve_connection_h2_tls(vio::ssl_server_client_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, keepalive_options_t options)
+vio::task_t<void> serve_connection_h2_tls(vio::ssl_server_client_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
   tls_transport_t transport{std::move(client), loop, std::nullopt};

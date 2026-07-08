@@ -238,7 +238,7 @@ private:
 };
 
 template <typename Transport>
-vio::task_t<write_outcome_t> write_response(Transport &transport, response_t response, bool keep_alive, bool head_request, const keepalive_options_t &options)
+vio::task_t<write_outcome_t> write_response(Transport &transport, response_t response, bool keep_alive, bool head_request, const server_options_t &options)
 {
   if (response.body_stream && !head_request)
   {
@@ -269,7 +269,7 @@ vio::task_t<write_outcome_t> write_response(Transport &transport, response_t res
 // be kept alive. Returns false (close the connection) if the handler left more
 // than max_drain_bytes unread, or on a read/parse error.
 template <typename Transport>
-vio::task_t<bool> drain_request_body(request_codec_t &codec, Transport &transport, const keepalive_options_t &options)
+vio::task_t<bool> drain_request_body(request_codec_t &codec, Transport &transport, const server_options_t &options)
 {
   std::size_t drained = 0;
   for (;;)
@@ -306,7 +306,7 @@ vio::task_t<bool> drain_request_body(request_codec_t &codec, Transport &transpor
 }
 
 template <typename Transport>
-vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, keepalive_options_t options)
+vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   if (!transport.start_reader())
   {
@@ -499,14 +499,14 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
   }
 }
 
-vio::task_t<void> serve_connection_tls(vio::ssl_server_client_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, keepalive_options_t options)
+vio::task_t<void> serve_connection_tls(vio::ssl_server_client_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
   co_await serve_connection_impl(tls_transport_t{std::move(client), loop, std::nullopt}, std::move(router), std::move(logger), options);
 }
 } // namespace
 
-vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, keepalive_options_t options)
+vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
   co_await serve_connection_impl(tcp_transport_t{std::move(client), loop, std::nullopt}, std::move(router), std::move(logger), options);
@@ -534,7 +534,7 @@ vio::task_t<void> drain_active(vio::event_loop_t &loop, std::shared_ptr<std::siz
 }
 } // namespace
 
-vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, vio::cancellation_t *cancel, keepalive_options_t options)
+vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, vio::cancellation_t *cancel, server_options_t options)
 {
   auto active = std::make_shared<std::size_t>(0);
   for (;;)
@@ -567,7 +567,7 @@ vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<cons
 
     ++(*active);
     emit(logger, log_level_t::debug, "connection accepted");
-    [](vio::tcp_t connection, std::shared_ptr<const router_t> routes, std::shared_ptr<const logger_t> log, keepalive_options_t opts, std::shared_ptr<std::size_t> count) -> vio::detached_task_t
+    [](vio::tcp_t connection, std::shared_ptr<const router_t> routes, std::shared_ptr<const logger_t> log, server_options_t opts, std::shared_ptr<std::size_t> count) -> vio::detached_task_t
     {
       if (opts.protocol == protocol_t::h2c)
       {
@@ -582,7 +582,7 @@ vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<cons
   }
 }
 
-vio::task_t<result_t<void>> serve_tls(vio::ssl_server_t server, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, vio::cancellation_t *cancel, keepalive_options_t options)
+vio::task_t<result_t<void>> serve_tls(vio::ssl_server_t server, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, vio::cancellation_t *cancel, server_options_t options)
 {
   auto active = std::make_shared<std::size_t>(0);
   for (;;)
@@ -615,7 +615,7 @@ vio::task_t<result_t<void>> serve_tls(vio::ssl_server_t server, std::shared_ptr<
 
     ++(*active);
     emit(logger, log_level_t::debug, "tls connection accepted");
-    [](vio::ssl_server_client_t connection, std::shared_ptr<const router_t> routes, std::shared_ptr<const logger_t> log, keepalive_options_t opts, std::shared_ptr<std::size_t> count) -> vio::detached_task_t
+    [](vio::ssl_server_client_t connection, std::shared_ptr<const router_t> routes, std::shared_ptr<const logger_t> log, server_options_t opts, std::shared_ptr<std::size_t> count) -> vio::detached_task_t
     {
       auto handshake = co_await vio::ssl_server_client_handshake(connection);
       if (handshake.has_value())

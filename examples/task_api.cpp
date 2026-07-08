@@ -207,7 +207,7 @@ VIO_MAIN(loop, argc, argv)
 
   std::println("prism {} task api on http://127.0.0.1:{}", prism::version(), port);
 
-  prism::keepalive_options_t options;
+  prism::server_options_t options;
   options.idle_timeout = std::chrono::seconds{30};
   options.max_connections = 1024;
 

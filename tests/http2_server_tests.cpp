@@ -232,7 +232,7 @@ vio::task_t<std::map<std::uint32_t, h2_response_t>> run_h2_case(vio::event_loop_
   REQUIRE(bound_name.has_value());
   int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
 
-  prism::keepalive_options_t options;
+  prism::server_options_t options;
   options.protocol = prism::protocol_t::h2c;
 
   vio::cancellation_t cancel;

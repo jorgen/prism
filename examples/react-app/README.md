@@ -95,5 +95,5 @@ directory and port as arguments (defaults: `dist` and `8080`).
 - In dev, the same `/api` contract is served by prism and reached through Vite's
   proxy, so dev and prod behave identically.
 
-For HTTP/2 (h2c or h2 over TLS with ALPN), pass `keepalive_options_t` /
+For HTTP/2 (h2c or h2 over TLS with ALPN), pass `server_options_t` /
 `listen_tls` exactly as the other examples show — the React app doesn't change.

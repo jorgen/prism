@@ -66,7 +66,7 @@ int main(int argc, char **argv)
                 co_return prism::response_t::text(prism::status_t::ok, "ok\n");
               });
 
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       if (h2c)
       {
         options.protocol = prism::protocol_t::h2c;

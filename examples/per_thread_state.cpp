@@ -45,7 +45,7 @@ VIO_MAIN(loop, argc, argv)
   std::uint32_t workers = argc > 1 ? static_cast<std::uint32_t>(std::atoi(argv[1])) : 1;
   std::println("prism {} — per-thread state on http://127.0.0.1:8080 with {} worker(s) (try /hello/world then /stats)", prism::version(), workers);
 
-  prism::keepalive_options_t options;
+  prism::server_options_t options;
   options.worker_threads = workers;
 
   co_return co_await prism::run(loop, "", 8080, configure, options);

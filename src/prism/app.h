@@ -205,9 +205,9 @@ public:
   // Contract in multi-worker mode: options.max_connections is per worker (process
   // ceiling = worker_threads * max_connections); a custom logger sink must be
   // thread-safe (the default stdout sink already is).
-  [[nodiscard]] vio::task_t<result_t<void>> listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel = nullptr, keepalive_options_t options = {});
+  [[nodiscard]] vio::task_t<result_t<void>> listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel = nullptr, server_options_t options = {});
 
-  [[nodiscard]] vio::task_t<result_t<void>> listen_tls(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::ssl_config_t config, vio::cancellation_t *cancel = nullptr, keepalive_options_t options = {});
+  [[nodiscard]] vio::task_t<result_t<void>> listen_tls(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::ssl_config_t config, vio::cancellation_t *cancel = nullptr, server_options_t options = {});
 
 private:
   void record_route_error(std::optional<std::string> error)
@@ -223,5 +223,5 @@ private:
   std::vector<std::string> _route_errors;
 };
 
-[[nodiscard]] vio::task_t<int> run(vio::event_loop_t &loop, std::string_view host, uint16_t port, std::function<void(app_t &)> configure, keepalive_options_t options = {});
+[[nodiscard]] vio::task_t<int> run(vio::event_loop_t &loop, std::string_view host, uint16_t port, std::function<void(app_t &)> configure, server_options_t options = {});
 } // namespace prism

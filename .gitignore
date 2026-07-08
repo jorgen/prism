@@ -8,3 +8,6 @@ compile_commands.json
 *.swp
 *.swo
 .cache/
+
+# Local out-of-tree build dirs (Linux configure without the macOS-pinned preset)
+build-*/

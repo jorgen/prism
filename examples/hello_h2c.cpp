@@ -47,7 +47,7 @@ int main(int argc, char **argv)
                 co_return prism::response_t::finished(prism::status_t::ok, "application/octet-stream", std::string(20000, 'x'));
               });
 
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.protocol = prism::protocol_t::h2c;
 
       auto result = co_await app.listen(loop, "127.0.0.1", port, nullptr, options);

@@ -45,6 +45,8 @@ message: hello ada
 - **Coroutine handlers** — every handler returns `vio::task_t<response_t>`, so it
   can `co_await` any async vio operation (timers, outbound I/O, a database call)
   without blocking the event loop.
+- **Multi-threaded by default** — prism runs one event loop per core (SO_REUSEPORT),
+  scaling across cores out of the box; drop to a single loop with one option.
 - **HTTP/1.1 server** — keep-alive, request pipelining, and slow-loris hardening
   (idle / header / body / write timeouts, `max_requests`, `max_connections`),
   parsing with [llhttp](https://github.com/nodejs/llhttp).
@@ -53,10 +55,6 @@ message: hello ada
   ALPN**, passing the full [h2spec](https://github.com/summerwind/h2spec)
   conformance suite. Your handlers don't change — HTTP/2 is just another transport
   under the same request/response/routing/negotiation layers.
-- **Streaming responses** — return `response_t::streaming(...)` to produce a body
-  incrementally (large downloads, event feeds); prism uses chunked
-  transfer-encoding on HTTP/1.1 and flow-controlled DATA frames on HTTP/2, both
-  with backpressure.
 - **Typed route parameters** — bind `path_t<"id", int>`,
   `query_t<"q", std::optional<int>>`, and `body_t<T>` (parsed by `Content-Type`)
   straight into the handler signature; prism parses, validates, and answers `400`
@@ -65,19 +63,16 @@ message: hello ada
   with a single `STFY_OBJ(...)` line; prism picks the response format from the
   `Accept` header (`406` if it can't) and parses the request body by its
   `Content-Type` (`415` / `400`).
-- **Serve finished bytes** — hand prism an already-serialised or binary payload
-  (an image, a proxied body, a hand-built CSV) with
-  `response_t::finished(status, content_type, bytes)`; read raw uploads with
-  `request.raw_body()`.
-- **Static files** — `app.static_files(url_prefix, root)` serves a directory
-  (your web app's built assets) alongside your REST routes: async file reads,
-  content-type from the extension, `index.html` for directories, and path-traversal
-  rejection.
+- **Streaming both ways** — produce a response body incrementally, or consume a
+  huge upload without buffering it; chunked on HTTP/1.1, flow-controlled DATA
+  frames on HTTP/2, with real backpressure either way.
+- **Static files** — serve a directory of built assets (an SPA, a bundle) next to
+  your API with one call.
 - **Pluggable logging** — a `std::function` sink with a level filter; stdout by
   default, swap in your framework in one line.
 - **Lean & consistent** — errors flow through `result_t<T>`
-  (`std::expected<T, error_t>`), mirroring vio so the two libraries feel like one.
-- Prism's own code is compiled `-fno-exceptions -fno-rtti`.
+  (`std::expected<T, error_t>`), mirroring vio so the two libraries feel like one;
+  prism's own code is compiled `-fno-exceptions -fno-rtti`.
 
 ## Routing
 
@@ -135,55 +130,6 @@ app.get("/tasks/{id}", get_task, store);    // runtime: verified at startup; can
 app.get<"/tasks/{id}">(get_task, store);    // static:  verified at compile time
 ```
 
-### Per-thread state
-
-For state that shouldn't be shared between threads — a DB connection, a reusable
-scratch buffer, an RNG — register a factory once on the app and take a
-`prism::per_thread<T>` parameter. Each thread gets **one** instance (created
-lazily), and it's a **mutable reference**; every handler that takes
-`per_thread<T>` shares that one per-thread instance (the factory is keyed by type
-on the app, so five handlers don't make five connections).
-
-```cpp
-app.provide_per_thread<Db>([] { return Db::connect(); });   // once, before listen()
-
-// mutable Db& via *, ->, or .get(); shared const config bound by reference
-vio::task_t<prism::response_t> get_user(const Config &cfg, prism::per_thread<Db> db,
-                                        prism::path_t<"id", int> id)
-{
-  auto row = db->query(cfg.table, id.value);   // db is this thread's Db, mutable
-  co_return prism::json::respond(prism::status_t::ok, row);
-}
-
-app.get("/users/{id}", get_user, std::cref(config));   // bound const& + per-thread Db
-```
-
-It's keyed off the connection's event loop, which is the per-thread identity (no
-`thread_local`). With a single worker it's one instance; set `worker_threads > 1`
-(below) and it becomes genuinely one-per-thread with no code change. See
-[`examples/per_thread_state.cpp`](examples/per_thread_state.cpp).
-
-### Multiple workers (SO_REUSEPORT)
-
-To scale across cores, set `keepalive_options_t::worker_threads`. `1` (the
-default) is the single-loop model. `> 1` runs that many event loops on that many
-threads — the caller loop is worker 0, prism spawns the rest — each binding the
-same port with `SO_REUSEPORT`, so the kernel load-balances connections across
-them. `0` means `hardware_concurrency()`.
-
-```cpp
-prism::keepalive_options_t options;
-options.worker_threads = 4;                 // 0 => hardware_concurrency
-co_await app.listen(loop, "", 8080, &cancel, options);
-```
-
-`per_thread<T>` then yields one instance per worker automatically. Two contracts
-in multi-worker mode: `max_connections` is **per worker** (process ceiling =
-`worker_threads * max_connections`), and a custom logger sink must be
-**thread-safe** (the default stdout sink already is). Firing the `cancel` token
-stops every worker accepting, drains in-flight requests (bounded by
-`shutdown_timeout`, default 10 s), and joins all threads before `listen` returns.
-
 ### The raw form
 
 You can always take the `request_t` and read things by hand:
@@ -191,14 +137,34 @@ You can always take the `request_t` and read things by hand:
 ```cpp
 vio::task_t<prism::response_t> handler(prism::request_t request)
 {
-  std::string_view id = request.param("id");   // path parameter
-  std::string q       = request.query("q");     // query parameter (percent-decoded, + -> space)
+  std::string_view id = request.param("id");    // path parameter
+  std::string q       = request.query("q");      // query parameter (percent-decoded, + -> space)
   bool verbose        = request.has_query("v");
   co_return prism::response_t::text(prism::status_t::ok, "ok");
 }
 ```
 
-## Content negotiation
+### Async handlers
+
+Handlers are coroutines. Take a `request_t` to reach the event loop and
+`co_await` anything vio offers:
+
+```cpp
+vio::task_t<prism::response_t> slow(prism::path_t<"ms", int> ms, prism::request_t request)
+{
+  co_await vio::sleep(*request.loop, std::chrono::milliseconds{ms.value});
+  co_return prism::response_t::text(prism::status_t::ok, "done");
+}
+```
+
+Prefer **free-function coroutine handlers** with state bound at registration over
+capturing coroutine lambdas: a lambda's captures live in the closure, a vio
+dangling-`this` footgun, whereas a free function takes its state into the
+coroutine frame by value.
+
+## Bodies
+
+### Content negotiation
 
 Wrap your value in `negotiated_t<T>` and prism chooses the wire format from the
 request's `Accept` header — JSON, YAML, or CBOR — serialising through structify.
@@ -243,6 +209,63 @@ Read a raw request body (uploads) as bytes with `request.raw_body()`
 (`std::span<const std::byte>`); `body_t<T>` stays for structured input.
 `prism::json::respond` is unchanged — the explicit, always-JSON path.
 
+### Streaming responses
+
+For a body you don't want to hold in memory — a large download, a generated
+export, a server-sent event feed — return `response_t::streaming`. The source is
+pulled for successive chunks until one reports `last`; it can `co_await` async work
+(a file read, an upstream fetch) between chunks.
+
+```cpp
+vio::task_t<prism::response_t> download(prism::request_t)
+{
+  auto n = std::make_shared<int>(0);
+  co_return prism::response_t::streaming(prism::status_t::ok, "text/plain",
+    [n]() -> vio::task_t<prism::body_chunk_t>
+    {
+      if (*n >= 100) co_return prism::body_chunk_t{"", true};
+      co_return prism::body_chunk_t{"line " + std::to_string((*n)++) + "\n", false};
+    });
+}
+```
+
+prism frames this as chunked transfer-encoding on HTTP/1.1 and as flow-controlled
+DATA frames on HTTP/2 — with real backpressure either way, so a slow client can't
+force the server to buffer the whole body.
+
+### Streaming request bodies
+
+Symmetrically, a very large **upload** can be consumed incrementally instead of
+buffered whole. Register the route with `post_stream` (also `get_/put_/patch_/
+del_stream`): the handler runs as soon as the headers are parsed and pulls the
+body through `request_t::body_stream()`.
+
+```cpp
+app.post_stream("/upload",
+  [](prism::request_t request) -> vio::task_t<prism::response_t>
+  {
+    std::array<std::byte, 64 * 1024> buffer{};
+    std::uint64_t total = 0;
+    prism::request_body_t &body = request.body_stream();
+    for (;;)
+    {
+      std::size_t n = co_await body.read_into(std::span<std::byte>(buffer.data(), buffer.size()));
+      if (n == 0) break;         // 0 == end of body
+      total += n;                // write_to_disk(buffer.data(), n), hash, forward, ...
+    }
+    co_return prism::response_t::text(prism::status_t::ok, std::to_string(total) + " bytes\n");
+  });
+```
+
+`read_into` fills your buffer and returns the byte count — for Content-Length
+bodies it reads straight into your buffer (**zero-copy on plain TCP**; on TLS it
+decrypts directly into it, the fewest copies TLS allows). Alternatively `co_await
+request.body_stream().read_chunk()` yields owned chunks, or `read_all()` drains
+the rest into a `std::string`. It works on HTTP/1.1 and HTTP/2 with real
+backpressure (HTTP/2 replenishes its receive window only as you consume). Streaming
+routes take a raw `request_t`; typed `body_t<T>` still expects a buffered body. See
+[`examples/upload_stream.cpp`](examples/upload_stream.cpp).
+
 ## Static files
 
 Serving a single-page app or a bundle of assets next to your API is one call.
@@ -279,76 +302,6 @@ site, and [`examples/react-app/`](examples/react-app) for a full TypeScript Reac
 + Vite app — developed with hot reload against a live prism API, then deployed as
 a single prism binary serving both the built SPA and the API.
 
-## Async handlers
-
-Handlers are coroutines. Take a `request_t` to reach the event loop and
-`co_await` anything vio offers:
-
-```cpp
-vio::task_t<prism::response_t> slow(prism::path_t<"ms", int> ms, prism::request_t request)
-{
-  co_await vio::sleep(*request.loop, std::chrono::milliseconds{ms.value});
-  co_return prism::response_t::text(prism::status_t::ok, "done");
-}
-```
-
-## Streaming responses
-
-For a body you don't want to hold in memory — a large download, a generated
-export, a server-sent event feed — return `response_t::streaming`. The source is
-pulled for successive chunks until one reports `last`; it can `co_await` async work
-(a file read, an upstream fetch) between chunks.
-
-```cpp
-vio::task_t<prism::response_t> download(prism::request_t)
-{
-  auto n = std::make_shared<int>(0);
-  co_return prism::response_t::streaming(prism::status_t::ok, "text/plain",
-    [n]() -> vio::task_t<prism::body_chunk_t>
-    {
-      if (*n >= 100) co_return prism::body_chunk_t{"", true};
-      co_return prism::body_chunk_t{"line " + std::to_string((*n)++) + "\n", false};
-    });
-}
-```
-
-prism frames this as chunked transfer-encoding on HTTP/1.1 and as flow-controlled
-DATA frames on HTTP/2 — with real backpressure either way, so a slow client can't
-force the server to buffer the whole body.
-
-## Streaming request bodies
-
-Symmetrically, a very large **upload** can be consumed incrementally instead of
-buffered whole. Register the route with `post_stream` (also `get_/put_/patch_/
-del_stream`): the handler runs as soon as the headers are parsed and pulls the
-body through `request_t::body_stream()`.
-
-```cpp
-app.post_stream("/upload",
-  [](prism::request_t request) -> vio::task_t<prism::response_t>
-  {
-    std::array<std::byte, 64 * 1024> buffer{};
-    std::uint64_t total = 0;
-    prism::request_body_t &body = request.body_stream();
-    for (;;)
-    {
-      std::size_t n = co_await body.read_into(std::span<std::byte>(buffer.data(), buffer.size()));
-      if (n == 0) break;         // 0 == end of body
-      total += n;                // write_to_disk(buffer.data(), n), hash, forward, ...
-    }
-    co_return prism::response_t::text(prism::status_t::ok, std::to_string(total) + " bytes\n");
-  });
-```
-
-`read_into` fills your buffer and returns the byte count — for Content-Length
-bodies it reads straight into your buffer (**zero-copy on plain TCP**; on TLS it
-decrypts directly into it, the fewest copies TLS allows). Alternatively `co_await
-request.body_stream().read_chunk()` yields owned chunks, or `read_all()` drains
-the rest into a `std::string`. It works on HTTP/1.1 and HTTP/2 with real
-backpressure (HTTP/2 replenishes its receive window only as you consume). Streaming
-routes take a raw `request_t`; typed `body_t<T>` still expects a buffered body. See
-[`examples/upload_stream.cpp`](examples/upload_stream.cpp).
-
 ## HTTP/2
 
 prism speaks HTTP/2 with a **hand-rolled** stack — binary framing, HPACK header
@@ -362,7 +315,7 @@ both modes.
 gRPC-style backends, and tools like `curl --http2-prior-knowledge`:
 
 ```cpp
-prism::keepalive_options_t options;
+prism::server_options_t options;
 options.protocol = prism::protocol_t::h2c;
 co_return co_await prism::run(loop, "127.0.0.1", 8080, routes, options);
 ```
@@ -393,8 +346,7 @@ co_return (co_await app.listen_tls(loop, "0.0.0.0", 8443, tls)).has_value() ? 0 
   streams, and prism dispatches each as its own coroutine, so several of your
   handlers can be in flight on one connection at once. Keep per-request state in
   the request (or share immutable state via `shared_ptr`) — the same guidance as
-  the free-function-with-bound-state pattern used throughout, which is why it
-  matters.
+  the free-function-with-bound-state pattern used throughout.
 - **Flow control and hardening are built in.** prism advertises
   `SETTINGS_MAX_CONCURRENT_STREAMS` and a header-list-size cap, honours the peer's
   send window, and enforces DoS caps (rapid-reset / CVE-2023-44487, SETTINGS
@@ -406,36 +358,36 @@ co_return (co_await app.listen_tls(loop, "0.0.0.0", 8443, tls)).has_value() ? 0 
 - **Timeouts are coarser than HTTP/1.1.** The read loop uses a connection-level
   idle/header timeout rather than per-stream deadlines (future work).
 
-## Logging
+## Running the server
 
-Each `app_t` owns a logger that defaults to a stdout sink (warnings/errors to
-stderr) and logs one access line per request plus lifecycle events. Plug in your
-own framework with a one-line sink:
+`prism::run` builds the app, runs your `configure(app_t&)` callback, and listens;
+pair it with `VIO_MAIN(loop, argc, argv) { ... }` (from vio), which supplies
+`main` and the event loop. For finer control, drive `app_t` yourself with
+`app.listen(...)` / `app.listen_tls(...)`.
 
-```cpp
-app.logger().set_level(prism::log_level_t::debug);
-app.logger().set_sink([](prism::log_level_t level, std::string_view message) {
-  my_framework::log(static_cast<int>(level), message);
-});
-```
+### Server options
 
-## Server options
-
-Keep-alive and hardening knobs are passed to `listen` / `prism::run`:
+Tuning and hardening knobs travel in `server_options_t`, passed to `listen` /
+`listen_tls` / `prism::run`. A value of `0` disables the relevant timeout or cap.
 
 ```cpp
-prism::keepalive_options_t options;
-options.idle_timeout    = std::chrono::seconds{30};
-options.header_timeout  = std::chrono::seconds{10};
-options.body_timeout    = std::chrono::seconds{30};
-options.write_timeout   = std::chrono::seconds{30};
-options.max_requests    = 1000;   // per connection (0 = unlimited)
-options.max_connections = 1024;   // concurrent, per worker (0 = unlimited)
-options.worker_threads  = 1;      // event-loop threads (0 = hardware_concurrency)
+prism::server_options_t options;
+options.idle_timeout     = std::chrono::seconds{30};
+options.header_timeout   = std::chrono::seconds{10};
+options.body_timeout     = std::chrono::seconds{30};
+options.write_timeout    = std::chrono::seconds{30};
+options.max_requests     = 1000;   // per connection (0 = unlimited)
+options.max_connections  = 1024;   // concurrent, per worker (0 = unlimited)
+options.worker_threads   = 0;      // event-loop threads (0 = hardware_concurrency)
 options.shutdown_timeout = std::chrono::seconds{10};  // per-loop graceful drain
 
 co_return co_await prism::run(loop, "0.0.0.0", 8080, routes, options);
 ```
+
+Size caps (`max_header_bytes`, `max_body_bytes`, `max_streaming_body_bytes`) round
+out the hardening set — see [`server_options.h`](src/prism/server_options.h).
+
+### Bind address & dual-stack
 
 The `host` argument selects the bind address by family: an IPv6 literal (`"::1"`,
 `"::"`) binds IPv6, anything else IPv4. An **empty string is the default and binds
@@ -444,10 +396,75 @@ from one socket (falling back to `0.0.0.0` when IPv6 is unavailable). Prefer it
 for local dev: tools like Node/Vite resolve `localhost` to `::1`, which an
 IPv4-only listener would refuse.
 
-`prism::run` builds the app, runs your `configure(app_t&)` callback, and listens;
-`VIO_MAIN(loop, argc, argv) { ... }` (from vio) supplies `main` and the event
-loop. Prefer **free-function coroutine handlers** with state bound at
-registration over capturing coroutine lambdas.
+### Workers & concurrency (SO_REUSEPORT)
+
+prism is **multi-threaded by default**. `worker_threads` runs that many event
+loops on that many threads, each binding the same port with `SO_REUSEPORT` so the
+kernel load-balances connections across them; the caller's loop is worker 0 and
+prism spawns the rest.
+
+- `0` (**default**) → `hardware_concurrency()` — one loop per core.
+- `1` → the single-loop model (no extra threads).
+- `N` → exactly `N` loops.
+
+```cpp
+prism::server_options_t options;
+options.worker_threads = 4;      // or leave 0 for one loop per core
+co_await app.listen(loop, "", 8080, &cancel, options);
+```
+
+Two consequences in multi-worker mode: `max_connections` is **per worker** (the
+process ceiling is `worker_threads * max_connections`), and a custom logger sink
+must be **thread-safe** (the default stdout sink already is).
+
+### Per-thread state
+
+For state that shouldn't be shared between threads — a DB connection, a reusable
+scratch buffer, an RNG — register a factory once on the app and take a
+`prism::per_thread<T>` parameter. Each thread (worker) gets **one** instance
+(created lazily) as a **mutable reference**; every handler that takes
+`per_thread<T>` shares that one per-thread instance (the factory is keyed by type
+on the app, so five handlers don't make five connections).
+
+```cpp
+app.provide_per_thread<Db>([] { return Db::connect(); });   // once, before listen()
+
+// mutable Db& via *, ->, or .get(); shared const config bound by reference
+vio::task_t<prism::response_t> get_user(const Config &cfg, prism::per_thread<Db> db,
+                                        prism::path_t<"id", int> id)
+{
+  auto row = db->query(cfg.table, id.value);   // db is this thread's Db, mutable
+  co_return prism::json::respond(prism::status_t::ok, row);
+}
+
+app.get("/users/{id}", get_user, std::cref(config));   // bound const& + per-thread Db
+```
+
+It's keyed off the connection's event loop, which is the per-thread identity (no
+`thread_local`), so with the default multi-worker runtime you get one instance per
+core with no code change. See
+[`examples/per_thread_state.cpp`](examples/per_thread_state.cpp).
+
+### Graceful shutdown
+
+Pass a `vio::cancellation_t*` to `listen` and fire it to shut down. Every worker
+stops accepting, in-flight requests are drained (bounded by `shutdown_timeout`),
+and all worker threads are joined before `listen`'s task returns — no connection is
+cut mid-response and no thread is force-stopped mid-drain.
+
+### Logging
+
+Each `app_t` owns a logger that defaults to a stdout sink (warnings/errors to
+stderr) and logs one access line per request plus lifecycle events. Plug in your
+own framework with a one-line sink (make it thread-safe if you run more than one
+worker):
+
+```cpp
+app.logger().set_level(prism::log_level_t::debug);
+app.logger().set_sink([](prism::log_level_t level, std::string_view message) {
+  my_framework::log(static_cast<int>(level), message);
+});
+```
 
 ## Building
 
@@ -473,13 +490,11 @@ cmake --preset asan && cmake --build cmake-build-asan && ctest --preset asan
 CI runs the suite under AddressSanitizer, ThreadSanitizer, and
 UndefinedBehaviorSanitizer on Linux for every push and pull request.
 
-## Dependencies & overrides
+### Dependencies & overrides
 
-prism's dependencies — **vio**, **structify**, **llhttp**, and **doctest** — are
-fetched and pinned (URL + SHA256) at configure time via
-[cmake-dep](https://github.com/jorgen/cmake-dep); no manual setup. Each one can
-instead be consumed **pre-built** by flipping a per-dependency option and pointing
-CMake at the install prefix (`…Config.cmake` on `CMAKE_PREFIX_PATH`):
+Each dependency can instead be consumed **pre-built** by flipping a per-dependency
+option and pointing CMake at the install prefix (`…Config.cmake` on
+`CMAKE_PREFIX_PATH`):
 
 | Option (default `OFF`)        | Effect when `ON`                                   |
 |-------------------------------|----------------------------------------------------|
@@ -495,15 +510,13 @@ cmake --preset debug \
 ```
 
 When an option is `ON`, prism does not fetch that dependency's sources at all — it
-must be resolvable via `find_package`.
+must be resolvable via `find_package`. These knobs are auto-declared by cmake-dep
+from each `CmDepFetchPackage` call (prefix derived from the project name). The same
+mechanism gives every dependency a `PRISM_<DEP>_VERSION` / `PRISM_<DEP>_URL` /
+`PRISM_<DEP>_SHA256` cache variable, so you can fetch a different version/URL/hash
+without editing the packages file — e.g. `-DPRISM_LLHTTP_URL=… -DPRISM_LLHTTP_SHA256=…`.
 
-These knobs are auto-declared by cmake-dep from each `CmDepFetchPackage` call
-(prefix derived from the project name). The same mechanism also gives every prism
-dependency a `PRISM_<DEP>_VERSION` / `PRISM_<DEP>_URL` / `PRISM_<DEP>_SHA256` cache
-variable, so you can fetch a different version/URL/hash without editing the
-packages file — e.g. `-DPRISM_LLHTTP_URL=… -DPRISM_LLHTTP_SHA256=…`.
-
-### Overriding vio's dependencies through prism
+#### Overriding vio's dependencies through prism
 
 vio carries the same per-dependency toggles (`VIO_USE_SYSTEM_LIBUV`,
 `VIO_USE_SYSTEM_LIBRESSL`, `VIO_USE_SYSTEM_ADA`, `VIO_USE_SYSTEM_DOCTEST`,
@@ -552,6 +565,10 @@ installed); it installs the library and headers otherwise.
   service: typed path/query/body parameters, JSON/YAML/CBOR content negotiation,
   a streamed `GET /tasks.csv` export, an async endpoint, a custom log sink, and an
   optional port read from `argv`.
+- [`examples/per_thread_state.cpp`](examples/per_thread_state.cpp) — per-thread
+  handler state across workers; takes a `workers` count on the command line.
+- [`examples/upload_stream.cpp`](examples/upload_stream.cpp) — streaming request
+  bodies (large uploads consumed without buffering) over HTTP/1.1 and TLS.
 - [`examples/hello_h2c.cpp`](examples/hello_h2c.cpp) — cleartext HTTP/2 (h2c);
   try `curl --http2-prior-knowledge -v http://127.0.0.1:8080/health`.
 - [`examples/hello_h2tls.cpp`](examples/hello_h2tls.cpp) — HTTP/2 over TLS with

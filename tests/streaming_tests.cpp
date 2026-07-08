@@ -61,7 +61,7 @@ vio::task_t<void> send_and_read(vio::event_loop_t &loop, int port, std::string r
   }
 }
 
-vio::task_t<std::string> run_stream_case(vio::event_loop_t &loop, prism::keepalive_options_t options, std::string request)
+vio::task_t<std::string> run_stream_case(vio::event_loop_t &loop, prism::server_options_t options, std::string request)
 {
   prism::app_t app;
   // read_all path
@@ -175,7 +175,7 @@ TEST_SUITE("http1 streaming request bodies")
     vio::run(
       [&](vio::event_loop_t &loop) -> vio::task_t<int>
       {
-        prism::keepalive_options_t options;
+        prism::server_options_t options;
         options.max_header_bytes = 256;
         std::string request = "POST /all HTTP/1.1\r\nHost: localhost\r\nX-Big: ";
         request += std::string(4096, 'a');

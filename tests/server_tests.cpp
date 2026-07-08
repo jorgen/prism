@@ -111,7 +111,7 @@ vio::task_t<void> run_client6(vio::event_loop_t &loop, int port, std::string req
   }
 }
 
-vio::task_t<std::string> run_case(vio::event_loop_t &loop, prism::keepalive_options_t options, std::string request)
+vio::task_t<std::string> run_case(vio::event_loop_t &loop, prism::server_options_t options, std::string request)
 {
   prism::app_t app;
   app.get("/ping",
@@ -311,7 +311,7 @@ TEST_CASE("keep-alive: server forces Connection: close once max_requests is reac
   int rc = vio::run(
     [](vio::event_loop_t &loop) -> vio::task_t<int>
     {
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.max_requests = 1;
       std::string response = co_await run_case(loop, options, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n");
       CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
@@ -328,7 +328,7 @@ TEST_CASE("keep-alive: an idle connection is closed after the idle timeout")
   int rc = vio::run(
     [](vio::event_loop_t &loop) -> vio::task_t<int>
     {
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.idle_timeout = std::chrono::milliseconds{100};
       options.header_timeout = std::chrono::seconds{30};
       options.body_timeout = std::chrono::seconds{30};
@@ -345,7 +345,7 @@ TEST_CASE("keep-alive: a slow partial request is closed after the request timeou
   int rc = vio::run(
     [](vio::event_loop_t &loop) -> vio::task_t<int>
     {
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.idle_timeout = std::chrono::seconds{30};
       options.header_timeout = std::chrono::milliseconds{100};
       std::string response = co_await run_case(loop, options, "GET /ping HTTP/1.1\r\nHost: localhost\r\n");
@@ -379,7 +379,7 @@ TEST_CASE("a large response is delivered through the write-timeout path")
       REQUIRE(bound_name.has_value());
       int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
 
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.write_timeout = std::chrono::seconds{5};
       vio::cancellation_t cancel;
       auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, options);
@@ -405,7 +405,7 @@ TEST_CASE("keep-alive: a stalled request body is closed after the body timeout")
   int rc = vio::run(
     [](vio::event_loop_t &loop) -> vio::task_t<int>
     {
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.idle_timeout = std::chrono::seconds{3};
       options.header_timeout = std::chrono::seconds{3};
       options.body_timeout = std::chrono::milliseconds{100};
@@ -424,7 +424,7 @@ TEST_CASE("keep-alive: a pipelined request with a stalled body honors body_timeo
   int rc = vio::run(
     [](vio::event_loop_t &loop) -> vio::task_t<int>
     {
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.idle_timeout = std::chrono::seconds{10};
       options.header_timeout = std::chrono::seconds{10};
       options.body_timeout = std::chrono::milliseconds{100};
@@ -463,7 +463,7 @@ TEST_CASE("max_connections sheds connections beyond the cap")
       REQUIRE(bound_name.has_value());
       int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
 
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.max_connections = 1;
       options.idle_timeout = std::chrono::seconds{30};
       vio::cancellation_t cancel;
@@ -610,7 +610,7 @@ TEST_CASE("the server emits an access log line per request through the logger")
         });
 
       vio::cancellation_t cancel;
-      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), logger, &cancel, prism::keepalive_options_t{});
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), logger, &cancel, prism::server_options_t{});
 
       std::string response;
       co_await run_client(loop, port, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response);
@@ -659,7 +659,7 @@ TEST_CASE("a handler can co_await async work via the event loop on request.loop"
       int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
 
       vio::cancellation_t cancel;
-      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, prism::keepalive_options_t{});
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, prism::server_options_t{});
 
       std::string response;
       co_await run_client(loop, port, "GET /wait HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response);
@@ -703,7 +703,7 @@ TEST_CASE("a dual-stack listener on :: accepts both IPv4 and IPv6 loopback clien
       int port = ntohs(reinterpret_cast<const sockaddr_in6 *>(&bound_name.value())->sin6_port);
 
       vio::cancellation_t cancel;
-      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, prism::keepalive_options_t{});
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, prism::server_options_t{});
 
       std::string response4;
       co_await run_client(loop, port, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response4);
@@ -750,7 +750,7 @@ TEST_CASE("query parameters survive the codec and reach the handler")
       int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
 
       vio::cancellation_t cancel;
-      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, prism::keepalive_options_t{});
+      auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, prism::server_options_t{});
 
       std::string response;
       co_await run_client(loop, port, "GET /echo?name=ada+lovelace HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", response);
@@ -778,7 +778,7 @@ TEST_CASE("multi-worker: reuseport workers serve concurrent requests and drain c
                 co_return prism::response_t::text(prism::status_t::ok, "pong");
               });
 
-      prism::keepalive_options_t options;
+      prism::server_options_t options;
       options.worker_threads = 4;
       options.shutdown_timeout = std::chrono::seconds{5};
 
