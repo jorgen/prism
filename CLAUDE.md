@@ -319,6 +319,43 @@ prism's freed buffer, and without a copy. Routing state is shared via
 `std::shared_ptr<const router_t>` (a copy of the router taken at `listen`), so
 in-flight connection coroutines keep it alive even if the `app_t` is destroyed.
 
+### Multi-worker runtime (SO_REUSEPORT)
+
+`keepalive_options_t::worker_threads` (default `1`) scales the server across
+cores. `1` keeps the single-loop model exactly. `> 1` runs that many event loops
+on that many threads — the caller loop is **worker 0**; prism spawns N-1 more via
+`vio::thread_with_event_loop_t` — each binding the *same* port with
+`UV_TCP_REUSEPORT` (SO_REUSEPORT), so the kernel load-balances accepts. `0` =
+`hardware_concurrency()` (floor 1). Because `per_thread<T>` is keyed by
+`request.loop`, one worker per thread ⇒ one instance per thread, no code change.
+This is entirely prism-side: `vio::tcp_bind` already forwards `uv_tcp_bind` flags,
+so no vio change was needed. The family/dual-stack decision is made once in
+`resolve_and_bind` (returns `bound_server_t::ipv6`); workers **replay worker 0's
+resolved `{host, ipv6}`** so every loop binds the same address (no independent
+`::`→`0.0.0.0` re-decision). `max_connections` is **per worker** (process ceiling
+= `worker_threads * max_connections`).
+
+Shutdown is a **graceful drain**. Each worker owns its own lock-free
+`vio::cancellation_t` (`cancellation_t` has single-thread affinity — only ever
+`cancel()`/`register_callback`/`~registration_t` a token on its owning loop
+thread). The user's `cancel` (fired on the caller thread) fans out via
+`cancel->register_callback` → `run_in_loop([c]{ c->cancel(); })` onto each worker
+loop, so every worker stops accepting on its own thread. `serve`/`serve_tls`, on
+the cancel branch, `co_await drain_active(...)` — poll the per-loop `active`
+counter (20 ms `vio::sleep`, cancel `nullptr`) until it hits 0 or
+`options.shutdown_timeout` (default 10 s) elapses (warn-logged if it does) — then
+return. `app_t::listen` awaits worker 0's `serve`, calls `stop_workers()` again
+(covers the error path where worker 0 ended without the user cancelling), then a
+`std::latch{N-1}` `wait()`s until every worker's detached serve counted down, and
+finally `pool.clear()` (`~thread_with_event_loop_t` → `stop_and_join`) — join only
+after all loops are idle, never force-stopped mid-drain. `worker_t`/`latch`/
+`registration_t` live in the `listen` coroutine frame (alive across the
+`co_await`); the router/logger `shared_ptr` snapshot is shared to all workers.
+`listen_tls` mirrors this, each worker doing its own `ssl_server_create`
+(⇒ its own `SSL_CTX`, N× context memory). TSan-clean; the single-worker path is
+byte-identical to before. See `examples/per_thread_state.cpp` (takes a `workers`
+argv).
+
 ### Logging
 
 Logging is a pluggable, per-app facade (`logging.h`). `app_t` owns a
@@ -328,7 +365,9 @@ configure it via `app.logger().set_sink(...)` / `set_level(...)` before
 just `std::function<void(log_level_t, std::string_view)>`, so bridging to spdlog
 / glog / etc. is a one-line lambda; the default sink writes `timestamp [LEVEL]
 message` to stdout (warn/error to stderr) and **fflushes each line** so logs
-survive a crash. `logger_t::enabled(level)` gates formatting, and the per-request
+survive a crash; it guards the write with a `std::mutex` (held in a captured
+`shared_ptr`) so multi-worker output does not tear — a **custom sink must be
+thread-safe** when `worker_threads > 1`. `logger_t::enabled(level)` gates formatting, and the per-request
 access line is only built when `info` is enabled. The logger rides into the
 connection coroutines as `std::shared_ptr<const logger_t>` exactly like the
 router (`serve`/`serve_connection` take it; a null logger means silent — tests

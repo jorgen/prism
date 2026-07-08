@@ -198,6 +198,13 @@ public:
     return _router.dispatch(std::move(request));
   }
 
+  // With options.worker_threads > 1, listen runs that many event loops on that
+  // many threads (the caller loop is worker 0), each binding the same port with
+  // SO_REUSEPORT so the kernel load-balances accepts. The passed cancel token
+  // (fired on the caller thread) drains and joins every worker before returning.
+  // Contract in multi-worker mode: options.max_connections is per worker (process
+  // ceiling = worker_threads * max_connections); a custom logger sink must be
+  // thread-safe (the default stdout sink already is).
   [[nodiscard]] vio::task_t<result_t<void>> listen(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::cancellation_t *cancel = nullptr, keepalive_options_t options = {});
 
   [[nodiscard]] vio::task_t<result_t<void>> listen_tls(vio::event_loop_t &loop, std::string_view host, uint16_t port, vio::ssl_config_t config, vio::cancellation_t *cancel = nullptr, keepalive_options_t options = {});

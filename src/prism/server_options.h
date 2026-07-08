@@ -33,6 +33,17 @@ struct keepalive_options_t
   // bytes to keep the HTTP/1.1 connection alive; beyond it the connection closes.
   std::size_t max_drain_bytes = std::size_t{64} * 1024;
 
+  // Number of event-loop worker threads. 1 (default) keeps the single-loop model.
+  // >1 runs that many loops on that many threads, each binding the same port with
+  // SO_REUSEPORT (the kernel load-balances accepts). 0 = hardware_concurrency.
+  // Note: max_connections is per worker; the process ceiling is
+  // worker_threads * max_connections.
+  std::uint32_t worker_threads = 1;
+  // Per-loop graceful-drain budget on shutdown: after the accept loop stops, wait
+  // up to this long for in-flight connections to finish before the loop is torn
+  // down. 0 = do not wait.
+  std::chrono::milliseconds shutdown_timeout = std::chrono::seconds{10};
+
   protocol_t protocol = protocol_t::http1;
 };
 } // namespace prism

@@ -159,9 +159,30 @@ app.get("/users/{id}", get_user, std::cref(config));   // bound const& + per-thr
 ```
 
 It's keyed off the connection's event loop, which is the per-thread identity (no
-`thread_local`). prism runs on a single loop today, so this is one instance now;
-it becomes genuinely one-per-thread the moment prism is run as multiple loops on
-multiple threads. See [`examples/per_thread_state.cpp`](examples/per_thread_state.cpp).
+`thread_local`). With a single worker it's one instance; set `worker_threads > 1`
+(below) and it becomes genuinely one-per-thread with no code change. See
+[`examples/per_thread_state.cpp`](examples/per_thread_state.cpp).
+
+### Multiple workers (SO_REUSEPORT)
+
+To scale across cores, set `keepalive_options_t::worker_threads`. `1` (the
+default) is the single-loop model. `> 1` runs that many event loops on that many
+threads — the caller loop is worker 0, prism spawns the rest — each binding the
+same port with `SO_REUSEPORT`, so the kernel load-balances connections across
+them. `0` means `hardware_concurrency()`.
+
+```cpp
+prism::keepalive_options_t options;
+options.worker_threads = 4;                 // 0 => hardware_concurrency
+co_await app.listen(loop, "", 8080, &cancel, options);
+```
+
+`per_thread<T>` then yields one instance per worker automatically. Two contracts
+in multi-worker mode: `max_connections` is **per worker** (process ceiling =
+`worker_threads * max_connections`), and a custom logger sink must be
+**thread-safe** (the default stdout sink already is). Firing the `cancel` token
+stops every worker accepting, drains in-flight requests (bounded by
+`shutdown_timeout`, default 10 s), and joins all threads before `listen` returns.
 
 ### The raw form
 
@@ -409,7 +430,9 @@ options.header_timeout  = std::chrono::seconds{10};
 options.body_timeout    = std::chrono::seconds{30};
 options.write_timeout   = std::chrono::seconds{30};
 options.max_requests    = 1000;   // per connection (0 = unlimited)
-options.max_connections = 1024;   // concurrent  (0 = unlimited)
+options.max_connections = 1024;   // concurrent, per worker (0 = unlimited)
+options.worker_threads  = 1;      // event-loop threads (0 = hardware_concurrency)
+options.shutdown_timeout = std::chrono::seconds{10};  // per-loop graceful drain
 
 co_return co_await prism::run(loop, "0.0.0.0", 8080, routes, options);
 ```

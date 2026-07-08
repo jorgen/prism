@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <ctime>
+#include <memory>
+#include <mutex>
 #include <string>
 
 namespace prism
@@ -25,11 +27,12 @@ std::string log_timestamp()
 
 log_sink_t default_stdout_sink()
 {
-  return [](log_level_t level, std::string_view message)
+  return [mutex = std::make_shared<std::mutex>()](log_level_t level, std::string_view message)
   {
     std::FILE *stream = (level == log_level_t::warn || level == log_level_t::error) ? stderr : stdout;
     std::string_view name = log_level_name(level);
     std::string stamp = log_timestamp();
+    std::lock_guard<std::mutex> guard(*mutex);
     std::fprintf(stream, "%s [%.*s] %.*s\n", stamp.c_str(), static_cast<int>(name.size()), name.data(), static_cast<int>(message.size()), message.data());
     std::fflush(stream);
   };

@@ -765,3 +765,57 @@ TEST_CASE("query parameters survive the codec and reach the handler")
     });
   CHECK(rc == 0);
 }
+
+TEST_CASE("multi-worker: reuseport workers serve concurrent requests and drain cleanly on cancel")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.get("/ping",
+              [](prism::request_t) -> vio::task_t<prism::response_t>
+              {
+                co_return prism::response_t::text(prism::status_t::ok, "pong");
+              });
+
+      prism::keepalive_options_t options;
+      options.worker_threads = 4;
+      options.shutdown_timeout = std::chrono::seconds{5};
+
+      const int port = 39517;
+      vio::cancellation_t cancel;
+      auto listen_task = app.listen(loop, "127.0.0.1", static_cast<uint16_t>(port), &cancel, options);
+
+      co_await vio::sleep(loop, std::chrono::milliseconds{150}, nullptr);
+
+      constexpr int request_count = 24;
+      std::vector<std::string> responses(request_count);
+      std::vector<vio::task_t<void>> clients;
+      clients.reserve(request_count);
+      for (int i = 0; i < request_count; ++i)
+      {
+        clients.push_back(run_client(loop, port, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", responses[static_cast<std::size_t>(i)]));
+      }
+      for (auto &client : clients)
+      {
+        co_await std::move(client);
+      }
+
+      int ok = 0;
+      for (const auto &response : responses)
+      {
+        if (response.find("HTTP/1.1 200 OK") != std::string::npos && response.ends_with("pong"))
+        {
+          ++ok;
+        }
+      }
+      CHECK(ok == request_count);
+
+      cancel.cancel();
+      auto result = co_await std::move(listen_task);
+      CHECK(result.has_value());
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}

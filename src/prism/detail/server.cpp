@@ -11,6 +11,7 @@
 
 #include <vio/error.h>
 #include <vio/event_loop.h>
+#include <vio/operation/sleep.h>
 #include <vio/operation/tcp.h>
 #include <vio/operation/tls_server.h>
 #include <vio/task.h>
@@ -511,6 +512,28 @@ vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const rout
   co_await serve_connection_impl(tcp_transport_t{std::move(client), loop, std::nullopt}, std::move(router), std::move(logger), options);
 }
 
+namespace
+{
+vio::task_t<void> drain_active(vio::event_loop_t &loop, std::shared_ptr<std::size_t> active, std::chrono::milliseconds budget, const std::shared_ptr<const logger_t> &logger)
+{
+  if (*active == 0 || budget <= std::chrono::milliseconds{0})
+  {
+    co_return;
+  }
+  const auto step = std::chrono::milliseconds{20};
+  std::chrono::milliseconds waited{0};
+  while (*active > 0 && waited < budget)
+  {
+    co_await vio::sleep(loop, step, nullptr);
+    waited += step;
+  }
+  if (*active > 0)
+  {
+    emit(logger, log_level_t::warn, "shutdown drain timed out with " + std::to_string(*active) + " connection(s) still active");
+  }
+}
+} // namespace
+
 vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, vio::cancellation_t *cancel, keepalive_options_t options)
 {
   auto active = std::make_shared<std::size_t>(0);
@@ -522,6 +545,7 @@ vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<cons
       if (cancel != nullptr && vio::is_cancelled(listen_result.error()))
       {
         emit(logger, log_level_t::info, "server stopped");
+        co_await drain_active(server.tcp.handle->event_loop, active, options.shutdown_timeout, logger);
         co_return result_t<void>{};
       }
       emit(logger, log_level_t::error, "accept loop stopped: " + listen_result.error().msg);
@@ -569,6 +593,7 @@ vio::task_t<result_t<void>> serve_tls(vio::ssl_server_t server, std::shared_ptr<
       if (cancel != nullptr && vio::is_cancelled(listen_result.error()))
       {
         emit(logger, log_level_t::info, "server stopped");
+        co_await drain_active(server.handle->tcp.tcp.handle->event_loop, active, options.shutdown_timeout, logger);
         co_return result_t<void>{};
       }
       emit(logger, log_level_t::error, "accept loop stopped: " + listen_result.error().msg);
