@@ -36,9 +36,18 @@ template <typename T>
 class per_thread_storage_t
 {
 public:
-  explicit per_thread_storage_t(std::function<T(vio::event_loop_t *)> factory)
+  per_thread_storage_t(std::function<T(vio::event_loop_t *)> factory, bool loop_aware)
     : _factory(std::move(factory))
+    , _loop_aware(loop_aware)
   {
+  }
+
+  // A loop-aware factory dereferences the loop, so it cannot run without one; the
+  // registry returns null in that case (dispatch degrades to a 500) rather than
+  // dereferencing a null loop. A nullary factory tolerates a null loop.
+  [[nodiscard]] bool requires_loop() const
+  {
+    return _loop_aware;
   }
 
   T &get(vio::event_loop_t *loop)
@@ -62,6 +71,7 @@ public:
 
 private:
   std::function<T(vio::event_loop_t *)> _factory;
+  bool _loop_aware;
   std::shared_mutex _mutex;
   std::unordered_map<vio::event_loop_t *, std::unique_ptr<T>> _instances;
 };
@@ -77,7 +87,8 @@ public:
   void provide(F factory)
   {
     std::function<T(vio::event_loop_t *)> wrapped;
-    if constexpr (std::is_invocable_v<F, vio::event_loop_t &>)
+    constexpr bool loop_aware = std::is_invocable_v<F, vio::event_loop_t &>;
+    if constexpr (loop_aware)
     {
       wrapped = [factory = std::move(factory)](vio::event_loop_t *loop) { return factory(*loop); };
     }
@@ -85,7 +96,7 @@ public:
     {
       wrapped = [factory = std::move(factory)](vio::event_loop_t *) { return factory(); };
     }
-    _storages[type_key<T>()] = std::make_shared<per_thread_storage_t<T>>(std::move(wrapped));
+    _storages[type_key<T>()] = std::make_shared<per_thread_storage_t<T>>(std::move(wrapped), loop_aware);
   }
 
   template <typename T>
@@ -96,7 +107,12 @@ public:
     {
       return nullptr;
     }
-    return &static_cast<per_thread_storage_t<T> *>(it->second.get())->get(loop);
+    auto *storage = static_cast<per_thread_storage_t<T> *>(it->second.get());
+    if (storage->requires_loop() && loop == nullptr)
+    {
+      return nullptr;
+    }
+    return &storage->get(loop);
   }
 
 private:

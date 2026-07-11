@@ -140,6 +140,22 @@ TEST_CASE("shared const bound state coexists with a per_thread extractor")
   CHECK(rc == 0);
 }
 
+TEST_CASE("a loop-aware factory degrades to 500 when the request carries no loop")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.provide_per_thread<loop_bound_t>([](vio::event_loop_t &factory_loop) { return loop_bound_t{&factory_loop}; });
+      app.get("/loop", report_loop);
+
+      auto r = co_await app.handle(make_request(prism::method_t::get, "/loop"));
+      CHECK(r.status == prism::status_t::internal_server_error);
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
 TEST_CASE("a loop-aware per-thread factory receives the request's event loop")
 {
   int rc = vio::run(
