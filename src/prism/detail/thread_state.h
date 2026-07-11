@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -35,7 +36,7 @@ template <typename T>
 class per_thread_storage_t
 {
 public:
-  explicit per_thread_storage_t(std::function<T()> factory)
+  explicit per_thread_storage_t(std::function<T(vio::event_loop_t *)> factory)
     : _factory(std::move(factory))
   {
   }
@@ -54,13 +55,13 @@ public:
     auto it = _instances.find(loop);
     if (it == _instances.end())
     {
-      it = _instances.emplace(loop, std::make_unique<T>(_factory())).first;
+      it = _instances.emplace(loop, std::make_unique<T>(_factory(loop))).first;
     }
     return *it->second;
   }
 
 private:
-  std::function<T()> _factory;
+  std::function<T(vio::event_loop_t *)> _factory;
   std::shared_mutex _mutex;
   std::unordered_map<vio::event_loop_t *, std::unique_ptr<T>> _instances;
 };
@@ -75,7 +76,16 @@ public:
   template <typename T, typename F>
   void provide(F factory)
   {
-    _storages[type_key<T>()] = std::make_shared<per_thread_storage_t<T>>(std::function<T()>(std::move(factory)));
+    std::function<T(vio::event_loop_t *)> wrapped;
+    if constexpr (std::is_invocable_v<F, vio::event_loop_t &>)
+    {
+      wrapped = [factory = std::move(factory)](vio::event_loop_t *loop) { return factory(*loop); };
+    }
+    else
+    {
+      wrapped = [factory = std::move(factory)](vio::event_loop_t *) { return factory(); };
+    }
+    _storages[type_key<T>()] = std::make_shared<per_thread_storage_t<T>>(std::move(wrapped));
   }
 
   template <typename T>

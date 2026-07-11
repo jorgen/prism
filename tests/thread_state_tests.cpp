@@ -55,6 +55,16 @@ vio::task_t<prism::response_t> with_shared(const std::string &prefix, prism::per
   c->n += 1;
   co_return prism::response_t::text(prism::status_t::ok, prefix + std::to_string(c->n));
 }
+
+struct loop_bound_t
+{
+  vio::event_loop_t *loop = nullptr;
+};
+
+vio::task_t<prism::response_t> report_loop(prism::per_thread<loop_bound_t> bound)
+{
+  co_return prism::response_t::text(prism::status_t::ok, bound->loop != nullptr ? "bound" : "null");
+}
 } // namespace
 
 TEST_CASE("per_thread instance is shared across handlers and mutable across requests")
@@ -125,6 +135,31 @@ TEST_CASE("shared const bound state coexists with a per_thread extractor")
 
       auto r = co_await app.handle(make_request(prism::method_t::get, "/both"));
       CHECK(r.body == "n=1");
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("a loop-aware per-thread factory receives the request's event loop")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      vio::event_loop_t *seen = nullptr;
+      app.provide_per_thread<loop_bound_t>(
+        [&seen](vio::event_loop_t &factory_loop)
+        {
+          seen = &factory_loop;
+          return loop_bound_t{&factory_loop};
+        });
+      app.get("/loop", report_loop);
+
+      auto request = make_request(prism::method_t::get, "/loop");
+      request.loop = &loop;
+      auto r = co_await app.handle(std::move(request));
+      CHECK(r.body == "bound");
+      CHECK(seen == &loop);
       co_return 0;
     });
   CHECK(rc == 0);

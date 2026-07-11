@@ -13,11 +13,13 @@ macro(Build3rdParty)
     # vio: async I/O runtime (libuv + LibreSSL + coroutines). Built static (with
     # its src/ dir re-exposed as a PUBLIC include, since vio marks headers PRIVATE
     # upstream), or consumed pre-built via find_package when PRISM_USE_SYSTEM_VIO is set.
-    CmDepAddPackage(vio CONFIG PUBLIC_INCLUDE src
+    # SKIP_IF_TARGET lets a parent project that already added vio (e.g. photon
+    # consuming prism) win, so vio is add_subdirectory'd exactly once.
+    CmDepAddPackage(vio CONFIG PUBLIC_INCLUDE src SKIP_IF_TARGET vio
         OPTIONS VIO_BUILD_TESTS=OFF VIO_BUILD_EXAMPLES=OFF VIO_BUILD_SHARED=OFF VIO_INSTALL=OFF)
 
     # structify: header-only JSON<->struct. Provides structify::structify.
-    CmDepAddPackage(structify CONFIG)
+    CmDepAddPackage(structify CONFIG SKIP_IF_TARGET structify)
 
     # doctest: testing framework. Only needed for the test build. vio (when
     # bundled) may already create the `doctest` target, so guard on it.
