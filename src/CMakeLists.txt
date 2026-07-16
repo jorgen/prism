@@ -11,6 +11,7 @@ set(public_headers
         prism/params.h
         prism/router.h
         prism/app.h
+        prism/reverse_proxy.h
         prism/server_options.h
         prism/static_files.h
 )
@@ -20,6 +21,7 @@ set(sources
         prism/logging.cpp
         prism/router.cpp
         prism/app.cpp
+        prism/reverse_proxy.cpp
         prism/static_files.cpp
         prism/version.cpp
         prism/detail/http1.cpp

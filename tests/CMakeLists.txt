@@ -11,6 +11,7 @@ add_executable(prism_tests
         router_tests.cpp
         http1_tests.cpp
         server_tests.cpp
+        reverse_proxy_tests.cpp
         http2_frame_tests.cpp
         http2_hpack_tests.cpp
         http2_connection_tests.cpp

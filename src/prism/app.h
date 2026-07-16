@@ -54,6 +54,19 @@ public:
   {
     _router.del(pattern, std::move(handler));
   }
+  void head(std::string_view pattern, handler_t handler)
+  {
+    _router.add(method_t::head, pattern, std::move(handler));
+  }
+  void options(std::string_view pattern, handler_t handler)
+  {
+    _router.add(method_t::options, pattern, std::move(handler));
+  }
+  void any(std::string_view pattern, handler_t handler)
+  {
+    for (method_t method : {method_t::get, method_t::head, method_t::post, method_t::put, method_t::patch, method_t::del, method_t::options})
+      _router.add(method, pattern, handler);
+  }
 
   // Streaming-body routes: the handler is dispatched once the headers are parsed
   // and pulls the (possibly very large) body through request_t::body_reader,
