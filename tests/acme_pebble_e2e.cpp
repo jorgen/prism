@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -83,6 +84,7 @@ int main()
       config.directory_url = directory_url;
       config.storage_dir = storage_dir;
       config.ca_mem = ca_mem;
+      config.renew_before = std::chrono::minutes(1);
       config.log = [](std::string_view message) { std::fprintf(stderr, "[manager] %.*s\n", static_cast<int>(message.size()), message.data()); };
 
       prism::acme::manager_t manager(loop, config);

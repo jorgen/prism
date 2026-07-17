@@ -106,9 +106,9 @@ jobs:
 
       - name: Start Pebble + challtestsrv
         run: |
-          docker run -d --name chall --network host ghcr.io/letsencrypt/pebble-challtestsrv:latest \
+          docker run -d --name chall --network host ghcr.io/letsencrypt/pebble-challtestsrv@sha256:12ce21884def456bcf9786542113949e1f19dc7738d2c70e156c2d0c38a1405b \
             -dnsserver :8053 -http01 "" -https01 "" -tlsalpn01 "" -doh ""
-          docker run -d --name peb --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble:latest \
+          docker run -d --name peb --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199 \
             -config test/config/pebble-config.json -dnsserver 127.0.0.1:8053
           docker cp peb:/test/certs/pebble.minica.pem "${{ github.workspace }}/minica.pem"
           for i in $(seq 1 30); do
