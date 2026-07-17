@@ -12,6 +12,7 @@
 
 #include "detail/thread_state.h"
 #include "http.h"
+#include "websocket.h"
 
 namespace prism
 {
@@ -28,6 +29,11 @@ class router_t
 {
 public:
   void add(method_t method, std::string_view pattern, handler_t handler, bool streaming = false);
+
+  // Register a WebSocket route (RFC 6455). A matching GET whose request carries a
+  // valid Upgrade handshake is hijacked by the server, which runs the ws_handler
+  // over the upgraded connection instead of dispatching a normal response.
+  void add_websocket(std::string_view pattern, ws_handler_t handler);
 
   void get(std::string_view pattern, handler_t handler)
   {
@@ -84,10 +90,16 @@ public:
     bool path_matched = false;   // some route matched the path
     bool method_allowed = false; // a route matched path AND method
     bool streaming = false;      // the matched route streams its request body
+    bool websocket = false;      // the matched route is a WebSocket route
   };
 
   [[nodiscard]] route_match_t resolve(method_t method, std::string_view path) const;
   [[nodiscard]] bool is_streaming(method_t method, std::string_view path) const;
+
+  // Bind the WebSocket route matching request.path (GET), stamping request.params
+  // + request.factories exactly as dispatch would, and returning its handler. An
+  // empty handler means no WebSocket route matched.
+  [[nodiscard]] ws_handler_t match_websocket(request_t &request) const;
 
   // Register a factory that produces one instance of T per thread (per event
   // loop). Handlers receive it via a prism::per_thread<T> parameter. Call before
@@ -111,8 +123,12 @@ private:
     method_t method;
     std::vector<segment_t> segments;
     handler_t handler;
+    ws_handler_t ws_handler;
     bool streaming = false;
+    bool websocket = false;
   };
+
+  [[nodiscard]] static route_t make_route(method_t method, std::string_view pattern);
 
   // Match a split path against a route's segments (ignoring method). Returns the
   // fixed-segment count on success (and whether a trailing wildcard applies), or

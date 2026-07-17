@@ -20,6 +20,8 @@
 #include "prism/detail/http1.h"
 #include "prism/detail/http2/server.h"
 #include "prism/detail/io_timeout.h"
+#include "prism/detail/websocket/connection.h"
+#include "prism/detail/websocket/handshake.h"
 
 namespace prism::detail
 {
@@ -323,6 +325,7 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
     bool request_started = codec.current_in_progress();
     bool body_phase = request_started && codec.current_headers_complete();
     bool stream_dispatch = false;
+    bool ws_dispatch = false;
     std::chrono::steady_clock::time_point deadline{};
     if (request_started)
     {
@@ -373,6 +376,11 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
           co_await transport.write(std::move(wire), options.write_timeout);
           co_return;
         }
+        if (codec.is_upgrade())
+        {
+          ws_dispatch = true;
+          break;
+        }
         if (!body_phase && codec.current_headers_complete())
         {
           body_phase = true;
@@ -404,8 +412,30 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
       co_return;
     }
 
-    if (!codec.has_request() && !stream_dispatch)
+    if (!codec.has_request() && !stream_dispatch && !ws_dispatch)
     {
+      co_return;
+    }
+
+    if (ws_dispatch)
+    {
+      request_t request = codec.has_request() ? codec.take_request().request : codec.take_header_request();
+      request.loop = &loop;
+      ws_handler_t handler = router->match_websocket(request);
+      if (!handler || !websocket::is_upgrade_request(request))
+      {
+        std::string wire = serialize_response(response_t::text(status_t::bad_request, "Bad Request"), false, false);
+        co_await transport.write(std::move(wire), options.write_timeout);
+        co_return;
+      }
+      const std::string *key = request.headers.find("Sec-WebSocket-Key");
+      std::string handshake = websocket::handshake_response(*key);
+      if (co_await transport.write(std::move(handshake), options.write_timeout) != write_outcome_t::ok)
+      {
+        co_return;
+      }
+      emit(logger, log_level_t::debug, "websocket connection upgraded");
+      co_await websocket::run_websocket<Transport>(std::move(transport), std::move(request), std::move(handler), loop, options);
       co_return;
     }
 

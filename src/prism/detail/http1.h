@@ -46,6 +46,7 @@ public:
   [[nodiscard]] status_t error_status() const;
   [[nodiscard]] bool current_in_progress() const;
   [[nodiscard]] bool current_headers_complete() const;
+  [[nodiscard]] bool is_upgrade() const;
 
   // Configure size caps (0 disables a cap). Applied to subsequent parsing.
   void set_limits(std::size_t max_header_bytes, std::size_t max_body_bytes, std::size_t max_streaming_body_bytes);

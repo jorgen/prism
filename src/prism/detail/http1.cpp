@@ -27,6 +27,7 @@ struct codec_state_t
   std::size_t header_bytes = 0;
   bool in_progress = false;
   bool headers_complete = false;
+  bool upgrade = false;
 
   std::size_t opt_max_body_bytes = 16u * 1024u * 1024u;
   std::size_t opt_max_header_bytes = 64u * 1024u;
@@ -103,6 +104,7 @@ int on_message_begin(llhttp_t *parser)
   state->header_bytes = 0;
   state->in_progress = true;
   state->headers_complete = false;
+  state->upgrade = false;
   state->streaming = false;
   state->suppress_body_append = false;
   state->body_pending.clear();
@@ -279,11 +281,22 @@ request_codec_t &request_codec_t::operator=(request_codec_t &&) noexcept = defau
 
 feed_result_t request_codec_t::feed(const char *data, std::size_t length)
 {
-  if (llhttp_execute(&_impl->parser, data, length) == HPE_OK)
+  llhttp_errno_t rc = llhttp_execute(&_impl->parser, data, length);
+  if (rc == HPE_OK)
   {
     return feed_result_t::ok;
   }
+  if (rc == HPE_PAUSED_UPGRADE)
+  {
+    _impl->upgrade = true;
+    return feed_result_t::ok;
+  }
   return feed_result_t::error;
+}
+
+bool request_codec_t::is_upgrade() const
+{
+  return _impl->upgrade;
 }
 
 void request_codec_t::finish()

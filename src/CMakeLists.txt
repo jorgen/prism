@@ -11,6 +11,7 @@ set(public_headers
         prism/params.h
         prism/router.h
         prism/app.h
+        prism/websocket.h
         prism/reverse_proxy.h
         prism/server_options.h
         prism/static_files.h
@@ -38,6 +39,8 @@ set(sources
         prism/detail/http2/hpack.cpp
         prism/detail/http2/connection.cpp
         prism/detail/http2/server.cpp
+        prism/detail/websocket/frame.cpp
+        prism/detail/websocket/handshake.cpp
 )
 
 add_library(prism ${public_headers} ${sources})

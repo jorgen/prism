@@ -93,6 +93,15 @@ public:
     _router.del_stream(pattern, std::move(handler));
   }
 
+  // WebSocket route (RFC 6455): a GET carrying a valid Upgrade handshake is
+  // hijacked and the ws_handler runs over the upgraded connection. The handler is
+  // a long-lived coroutine that takes the connection by shared_ptr (co_await
+  // receive()/send_text()/close()); see websocket.h.
+  void ws(std::string_view pattern, ws_handler_t handler)
+  {
+    _router.add_websocket(pattern, std::move(handler));
+  }
+
   template <typename Handler, typename... Bound>
     requires(!std::is_convertible_v<std::decay_t<Handler>, handler_t>)
   void get(std::string_view pattern, Handler &&handler, Bound &&...bound)

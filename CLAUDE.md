@@ -145,6 +145,9 @@ consumes the exact same mechanism with its own `VIO_` prefix.
     `configure(app_t&)` callback, and `listen`s — pair it with vio's
     `VIO_MAIN(loop, argc, argv)` macro (which generates `main` and forwards the
     args into a `task_t<int>` coroutine body) for a boilerplate-free entry point.
+  - `websocket.h` — `ws_connection_t` (the connection handed to a ws handler:
+    `send_text`/`send_binary`/`receive`/`close`/`request`), `ws_message_t`,
+    `ws_handler_t`. Register with `app.ws(pattern, handler)`.
   - `prism.h` — umbrella header + `version()`.
   - `detail/` — internal, non-installed headers (not on the public surface).
     - `http1.h` / `http1.cpp` — `request_codec_t`, a PIMPL wrapper over llhttp
@@ -179,6 +182,16 @@ consumes the exact same mechanism with its own `VIO_` prefix.
       - `server.h` / `server.cpp` — the async driver: read loop + single-flight
         coalescing writer + per-stream detached dispatch, over TCP
         (`serve_connection_h2`) or TLS (`serve_connection_h2_tls`).
+    - `websocket/` — the RFC 6455 server WebSocket stack:
+      - `frame.{h,cpp}` — `frame_reader_t` (incremental parse + validation +
+        client-mask unmasking, one frame at a time) + `serialize_frame` /
+        `serialize_close`.
+      - `handshake.{h,cpp}` — `is_upgrade_request`, `accept_key`
+        (`base64(sha1(key + GUID))` via `vio::crypto`), `handshake_response`.
+      - `connection.h` — the templated driver (`ws_state_t` / `ws_connection_impl_t`
+        / `run_websocket<Transport>`): a `shared_ptr` context co-owned by a read
+        pump + a single-flight writer, reassembling receive-side fragments and
+        answering ping/close, over TCP or TLS.
 - `tests/` — doctest (`DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS`).
   Coroutine handlers are exercised via `vio::run`, which runs the event loop and
   stops it automatically. HTTP/2 has unit tests (`http2_frame_tests`,
@@ -476,6 +489,40 @@ h1 431, h2 `max_header_list_size`), `max_body_bytes` (buffered 413),
 
 Depends on vio's `tcp_reader_t::read_into` (zero-copy scatter read) and
 `pause()`/`resume()` (transient `uv_read_stop`/`start` for backpressure).
+
+### WebSocket (RFC 6455, server-side)
+
+`app.ws(pattern, ws_handler)` registers a WebSocket route (a `websocket` flag on
+`router_t`, mirroring `streaming`). `ws_handler_t = std::function<vio::task_t<void>(
+std::shared_ptr<ws_connection_t>)>` — a long-lived coroutine taking the connection
+**by shared_ptr** (the vio dangling-`this` rule), so a free function or a capture-free
+lambda, never a capturing coroutine lambda.
+
+- **Handshake / hijack** (`detail/server.cpp` `serve_connection_impl`): llhttp
+  reports a `Connection: Upgrade` request as `HPE_PAUSED_UPGRADE`; the codec
+  (`detail/http1.cpp`) now maps that to `feed_result_t::ok` + `is_upgrade()` (rather
+  than a parse error). On an upgrade the connection loop hijacks: `match_websocket`
+  binds path params + returns the handler, then it writes `101 Switching Protocols`
+  with `Sec-WebSocket-Accept` and `co_await`s `run_websocket<Transport>` for the
+  connection's lifetime. Templated on the transport, so **`ws://` and `wss://` share
+  one code path** (a `wss` client must negotiate `http/1.1` via ALPN — there is no
+  RFC 8441 h2 WebSocket).
+- **Driver** (`detail/websocket/connection.h`): a `shared_ptr<ws_state_t>` co-owned
+  by an eager **read pump** (`co_await transport.read` → `frame_reader_t` → answer
+  ping, echo close, reassemble text/binary fragments, deliver whole messages to
+  `receive()`'s parked awaiter) and a **single-flight writer** (a detached
+  `request_flush`, like the h2 driver, satisfying vio's one-in-flight-write rule —
+  so `send_text`/`send_binary` from any coroutine, e.g. a pub/sub push, is safe).
+  `receive()` parks on a gate until a message or close; `close()` queues a Close
+  frame and `cancel()`s the reader to unblock the pump. The socket lives (via the
+  shared_ptr) until the pump + writer both drain, then tears down.
+- **Scope**: browser-compatible server. Message cap = `server_options_t::max_body_bytes`.
+  Out of scope: permessage-deflate, a WS *client*, subprotocol negotiation.
+- **Tests** (`tests/websocket_tests.cpp`): frame parse/serialize + masking +
+  control-frame + RFC 6455 vectors, `accept_key` (RFC example), and in-process
+  handshake/echo/close + fragmentation e2e over loopback TCP; ASan + TSan clean.
+  Example: `examples/hello_websocket.cpp` (browser page + `/ws` echo; also
+  `websocat ws://127.0.0.1:8080/ws`).
 
 ### Conformance & hardening testing (tools)
 
