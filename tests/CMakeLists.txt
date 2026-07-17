@@ -19,7 +19,11 @@ add_executable(prism_tests
         streaming_tests.cpp
         thread_state_tests.cpp
         static_files_tests.cpp
+        acme_jose_tests.cpp
 )
 target_link_libraries(prism_tests PRIVATE prism doctest_main doctest::doctest)
 
 add_test(NAME prism_tests COMMAND prism_tests)
+
+add_executable(acme_pebble_e2e acme_pebble_e2e.cpp)
+target_link_libraries(acme_pebble_e2e PRIVATE prism vio::vio)

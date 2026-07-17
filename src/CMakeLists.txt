@@ -14,8 +14,16 @@ set(public_headers
         prism/reverse_proxy.h
         prism/server_options.h
         prism/static_files.h
+        prism/acme/jose.h
+        prism/acme/csr.h
+        prism/acme/client.h
+        prism/acme/manager.h
 )
 set(sources
+        prism/acme/jose.cpp
+        prism/acme/csr.cpp
+        prism/acme/client.cpp
+        prism/acme/manager.cpp
         prism/http.cpp
         prism/content.cpp
         prism/logging.cpp

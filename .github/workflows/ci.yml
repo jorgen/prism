@@ -69,3 +69,79 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build-${{ matrix.name }} --output-on-failure
+
+  pebble_e2e:
+    runs-on: ubuntu-24.04
+    name: pebble-e2e
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 ninja-build cmake git ca-certificates ccache
+
+      - name: Cache 3rdparty dependencies
+        uses: actions/cache@v4
+        with:
+          path: 3rdparty
+          key: 3rdparty-${{ hashFiles('CMake/3rdPartyPackages.cmake', 'CMakeLists.txt') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-pebble-${{ github.sha }}
+          restore-keys: ccache-pebble-
+
+      - name: Configure & build the e2e binary
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          cmake -G Ninja -B build-pebble \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build-pebble --target acme_pebble_e2e
+
+      - name: Start Pebble + challtestsrv
+        run: |
+          docker run -d --name chall --network host ghcr.io/letsencrypt/pebble-challtestsrv:latest \
+            -dnsserver :8053 -http01 "" -https01 "" -tlsalpn01 "" -doh ""
+          docker run -d --name peb --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble:latest \
+            -config test/config/pebble-config.json -dnsserver 127.0.0.1:8053
+          docker cp peb:/test/certs/pebble.minica.pem "${{ github.workspace }}/minica.pem"
+          for i in $(seq 1 30); do
+            curl -sf --cacert "${{ github.workspace }}/minica.pem" https://127.0.0.1:14000/dir >/dev/null && exit 0
+            sleep 1
+          done
+          echo "pebble did not become ready" >&2
+          exit 1
+
+      - name: Issue two per-subdomain certs against Pebble
+        env:
+          ACME_DIRECTORY_URL: https://127.0.0.1:14000/dir
+          ACME_CA_FILE: ${{ github.workspace }}/minica.pem
+          ACME_E2E_DOMAINS: host1.test,host2.test
+          ACME_E2E_STORAGE: ${{ github.workspace }}/e2e-storage
+        run: ./build-pebble/tests/acme_pebble_e2e
+
+      - name: Re-run must reuse stored certs (no reissue)
+        env:
+          ACME_DIRECTORY_URL: https://127.0.0.1:14000/dir
+          ACME_CA_FILE: ${{ github.workspace }}/minica.pem
+          ACME_E2E_DOMAINS: host1.test,host2.test
+          ACME_E2E_STORAGE: ${{ github.workspace }}/e2e-storage
+        run: |
+          out=$(./build-pebble/tests/acme_pebble_e2e 2>&1)
+          echo "$out"
+          if echo "$out" | grep -q "requesting certificate"; then
+            echo "re-run reissued a still-valid certificate" >&2
+            exit 1
+          fi
+
+      - name: Pebble logs on failure
+        if: failure()
+        run: |
+          docker logs peb || true
+          docker logs chall || true

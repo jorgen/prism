@@ -132,7 +132,7 @@ TEST_SUITE("reverse_proxy")
 
         CHECK(captured.find("GET /app/path?x=1 HTTP/1.1\r\n") != std::string::npos);
         CHECK(count_occurrences(captured, "\r\nHost:") == 1);
-        CHECK(captured.find("Host: 127.0.0.1\r\n") != std::string::npos);
+        CHECK(captured.find("\r\nHost: 127.0.0.1:") != std::string::npos);
         CHECK(captured.find("X-Forwarded-Proto: https\r\n") != std::string::npos);
         CHECK(captured.find("X-Forwarded-Host: backend.local\r\n") != std::string::npos);
         CHECK(captured.find("X-Keep: keep-me\r\n") != std::string::npos);
