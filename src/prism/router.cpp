@@ -171,7 +171,7 @@ vio::task_t<response_t> router_t::dispatch(request_t request) const
 
   for (const auto &route : _routes)
   {
-    if (!segments_match(route, path_segments))
+    if (route.websocket || !segments_match(route, path_segments))
     {
       continue;
     }

@@ -36,6 +36,42 @@ std::string serialize_frame(opcode_t opcode, std::string_view payload, bool fin)
   return out;
 }
 
+std::string serialize_masked_frame(opcode_t opcode, std::string_view payload, const std::uint8_t mask_key[4], bool fin)
+{
+  std::string out;
+  out.reserve(payload.size() + 14);
+  const std::uint8_t b0 = (fin ? 0x80 : 0x00) | static_cast<std::uint8_t>(opcode);
+  out.push_back(static_cast<char>(b0));
+  const std::size_t len = payload.size();
+  if (len < 126)
+  {
+    out.push_back(static_cast<char>(0x80 | len));
+  }
+  else if (len <= 0xffff)
+  {
+    out.push_back(static_cast<char>(0x80 | 126));
+    out.push_back(static_cast<char>((len >> 8) & 0xff));
+    out.push_back(static_cast<char>(len & 0xff));
+  }
+  else
+  {
+    out.push_back(static_cast<char>(0x80 | 127));
+    for (int shift = 56; shift >= 0; shift -= 8)
+    {
+      out.push_back(static_cast<char>((static_cast<std::uint64_t>(len) >> shift) & 0xff));
+    }
+  }
+  for (std::size_t i = 0; i < 4; ++i)
+  {
+    out.push_back(static_cast<char>(mask_key[i]));
+  }
+  for (std::size_t i = 0; i < len; ++i)
+  {
+    out.push_back(static_cast<char>(static_cast<std::uint8_t>(payload[i]) ^ mask_key[i & 3]));
+  }
+  return out;
+}
+
 std::string serialize_close(std::uint16_t code, std::string_view reason)
 {
   std::string payload;
@@ -117,7 +153,7 @@ bool frame_reader_t::try_parse_one()
     _close_code = close_code::protocol_error;
     return false;
   }
-  if (!masked)
+  if (masked != _expect_masked)
   {
     _failed = true;
     _close_code = close_code::protocol_error;
@@ -159,12 +195,19 @@ bool frame_reader_t::try_parse_one()
     return false;
   }
 
-  if (available < offset + 4)
+  std::uint8_t mask[4] = {0, 0, 0, 0};
+  if (masked)
   {
-    return false;
+    if (available < offset + 4)
+    {
+      return false;
+    }
+    mask[0] = bytes[offset];
+    mask[1] = bytes[offset + 1];
+    mask[2] = bytes[offset + 2];
+    mask[3] = bytes[offset + 3];
+    offset += 4;
   }
-  const std::uint8_t mask[4] = {bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]};
-  offset += 4;
 
   if (available < offset + payload_len)
   {
@@ -177,7 +220,7 @@ bool frame_reader_t::try_parse_one()
   frame.payload.resize(static_cast<std::size_t>(payload_len));
   for (std::uint64_t i = 0; i < payload_len; ++i)
   {
-    frame.payload[static_cast<std::size_t>(i)] = static_cast<char>(bytes[offset + i] ^ mask[i & 3]);
+    frame.payload[static_cast<std::size_t>(i)] = masked ? static_cast<char>(bytes[offset + i] ^ mask[i & 3]) : static_cast<char>(bytes[offset + i]);
   }
   _buffer.erase(0, offset + static_cast<std::size_t>(payload_len));
   _ready.push_back(std::move(frame));

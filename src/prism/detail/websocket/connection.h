@@ -11,6 +11,7 @@
 #include <string_view>
 #include <utility>
 
+#include <vio/crypto.h>
 #include <vio/event_loop.h>
 #include <vio/task.h>
 #include <vio/unique_buf.h>
@@ -26,21 +27,46 @@ namespace prism::detail::websocket
 template <typename Transport>
 struct ws_state_t
 {
-  ws_state_t(Transport transport_arg, vio::event_loop_t &el, server_options_t o, request_t req)
+  ws_state_t(Transport transport_arg, vio::event_loop_t &el, server_options_t o, request_t req, bool client_mode = false)
     : transport(std::move(transport_arg))
     , loop(el)
     , options(o)
     , request(std::move(req))
+    , client(client_mode)
   {
     const std::size_t cap = options.max_body_bytes != 0 ? options.max_body_bytes : std::size_t{16} * 1024 * 1024;
     max_message = cap;
     reader.set_max_frame_size(cap);
+    reader.set_expect_masked(!client);
+  }
+
+  // A client masks every frame it sends (RFC 6455 §5.3); a server sends unmasked.
+  std::string make_frame(opcode_t opcode, std::string_view payload, bool fin = true)
+  {
+    if (client)
+    {
+      std::uint8_t key[4] = {0, 0, 0, 0};
+      auto filled = vio::crypto::random_bytes(std::span<std::uint8_t>(key, 4));
+      (void)filled;
+      return serialize_masked_frame(opcode, payload, key, fin);
+    }
+    return serialize_frame(opcode, payload, fin);
+  }
+
+  std::string make_close(std::uint16_t code, std::string_view reason)
+  {
+    std::string payload;
+    payload.push_back(static_cast<char>((code >> 8) & 0xff));
+    payload.push_back(static_cast<char>(code & 0xff));
+    payload.append(reason);
+    return make_frame(opcode_t::close, payload, true);
   }
 
   Transport transport;
   vio::event_loop_t &loop;
   server_options_t options;
   request_t request;
+  bool client = false;
 
   frame_reader_t reader;
   std::size_t max_message = std::size_t{16} * 1024 * 1024;
@@ -115,7 +141,7 @@ void queue_close_once(const std::shared_ptr<ws_state_t<Transport>> &state, std::
     return;
   }
   state->sent_close = true;
-  enqueue_out(state, serialize_close(code, ""));
+  enqueue_out(state, state->make_close(code, ""));
 }
 
 template <typename Transport>
@@ -130,9 +156,76 @@ void deliver_message(const std::shared_ptr<ws_state_t<Transport>> &state, opcode
 }
 
 template <typename Transport>
+bool process_frames(const std::shared_ptr<ws_state_t<Transport>> &state)
+{
+  while (state->reader.has_frame())
+  {
+    frame_t frame = state->reader.take_frame();
+    if (frame.opcode == opcode_t::ping)
+    {
+      enqueue_out(state, state->make_frame(opcode_t::pong, frame.payload));
+      continue;
+    }
+    if (frame.opcode == opcode_t::pong)
+    {
+      continue;
+    }
+    if (frame.opcode == opcode_t::close)
+    {
+      std::uint16_t code = close_code::normal;
+      if (frame.payload.size() >= 2)
+      {
+        code = static_cast<std::uint16_t>((static_cast<std::uint8_t>(frame.payload[0]) << 8) | static_cast<std::uint8_t>(frame.payload[1]));
+      }
+      queue_close_once(state, code);
+      return false;
+    }
+    if (frame.opcode == opcode_t::continuation)
+    {
+      if (!state->in_fragment)
+      {
+        queue_close_once(state, close_code::protocol_error);
+        return false;
+      }
+      state->fragment_buf.append(frame.payload);
+      if (frame.fin)
+      {
+        deliver_message(state, state->fragment_opcode, std::move(state->fragment_buf));
+        state->in_fragment = false;
+        state->fragment_buf.clear();
+      }
+    }
+    else
+    {
+      if (state->in_fragment)
+      {
+        queue_close_once(state, close_code::protocol_error);
+        return false;
+      }
+      if (frame.fin)
+      {
+        deliver_message(state, frame.opcode, std::move(frame.payload));
+      }
+      else
+      {
+        state->in_fragment = true;
+        state->fragment_opcode = frame.opcode;
+        state->fragment_buf = std::move(frame.payload);
+      }
+    }
+    if (state->fragment_buf.size() > state->max_message)
+    {
+      queue_close_once(state, close_code::message_too_big);
+      return false;
+    }
+  }
+  return true;
+}
+
+template <typename Transport>
 vio::task_t<void> read_pump(std::shared_ptr<ws_state_t<Transport>> state)
 {
-  bool running = true;
+  bool running = process_frames(state);
   while (running && !state->closed)
   {
     vio::unique_buf_t buffer;
@@ -146,71 +239,7 @@ vio::task_t<void> read_pump(std::shared_ptr<ws_state_t<Transport>> state)
       queue_close_once(state, state->reader.error_close_code());
       break;
     }
-    while (state->reader.has_frame())
-    {
-      frame_t frame = state->reader.take_frame();
-      if (frame.opcode == opcode_t::ping)
-      {
-        enqueue_out(state, serialize_frame(opcode_t::pong, frame.payload, true));
-        continue;
-      }
-      if (frame.opcode == opcode_t::pong)
-      {
-        continue;
-      }
-      if (frame.opcode == opcode_t::close)
-      {
-        std::uint16_t code = close_code::normal;
-        if (frame.payload.size() >= 2)
-        {
-          code = static_cast<std::uint16_t>((static_cast<std::uint8_t>(frame.payload[0]) << 8) | static_cast<std::uint8_t>(frame.payload[1]));
-        }
-        queue_close_once(state, code);
-        running = false;
-        break;
-      }
-      if (frame.opcode == opcode_t::continuation)
-      {
-        if (!state->in_fragment)
-        {
-          queue_close_once(state, close_code::protocol_error);
-          running = false;
-          break;
-        }
-        state->fragment_buf.append(frame.payload);
-        if (frame.fin)
-        {
-          deliver_message(state, state->fragment_opcode, std::move(state->fragment_buf));
-          state->in_fragment = false;
-          state->fragment_buf.clear();
-        }
-      }
-      else
-      {
-        if (state->in_fragment)
-        {
-          queue_close_once(state, close_code::protocol_error);
-          running = false;
-          break;
-        }
-        if (frame.fin)
-        {
-          deliver_message(state, frame.opcode, std::move(frame.payload));
-        }
-        else
-        {
-          state->in_fragment = true;
-          state->fragment_opcode = frame.opcode;
-          state->fragment_buf = std::move(frame.payload);
-        }
-      }
-      if (state->fragment_buf.size() > state->max_message)
-      {
-        queue_close_once(state, close_code::message_too_big);
-        running = false;
-        break;
-      }
-    }
+    running = process_frames(state);
   }
   state->closed = true;
   wake_receiver(*state);
@@ -256,7 +285,7 @@ public:
     {
       co_return false;
     }
-    enqueue_out(_state, serialize_frame(opcode_t::text, text, true));
+    enqueue_out(_state, _state->make_frame(opcode_t::text, text));
     co_return !_state->write_dead;
   }
 
@@ -267,7 +296,7 @@ public:
       co_return false;
     }
     std::string_view payload(reinterpret_cast<const char *>(data.data()), data.size());
-    enqueue_out(_state, serialize_frame(opcode_t::binary, payload, true));
+    enqueue_out(_state, _state->make_frame(opcode_t::binary, payload));
     co_return !_state->write_dead;
   }
 
@@ -281,7 +310,7 @@ public:
     if (!_state->sent_close && !_state->write_dead)
     {
       _state->sent_close = true;
-      enqueue_out(_state, serialize_close(code, reason));
+      enqueue_out(_state, _state->make_close(code, reason));
     }
     if (_state->transport.reader)
     {

@@ -191,7 +191,12 @@ consumes the exact same mechanism with its own `VIO_` prefix.
       - `connection.h` — the templated driver (`ws_state_t` / `ws_connection_impl_t`
         / `run_websocket<Transport>`): a `shared_ptr` context co-owned by a read
         pump + a single-flight writer, reassembling receive-side fragments and
-        answering ping/close, over TCP or TLS.
+        answering ping/close, over TCP or TLS. A `client` flag masks outbound
+        frames + expects unmasked inbound ones, so the same driver serves both
+        server and client connections.
+      - `client.{h,cpp}` — `connect_client(...)`: dials a backend over plaintext
+        TCP, performs the RFC 6455 client handshake (fresh key), and returns a
+        client-mode `ws_connection_t`. Used by the reverse-proxy WS relay.
 - `tests/` — doctest (`DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS`).
   Coroutine handlers are exercised via `vio::run`, which runs the event loop and
   stops it automatically. HTTP/2 has unit tests (`http2_frame_tests`,
@@ -516,11 +521,23 @@ lambda, never a capturing coroutine lambda.
   `receive()` parks on a gate until a message or close; `close()` queues a Close
   frame and `cancel()`s the reader to unblock the pump. The socket lives (via the
   shared_ptr) until the pump + writer both drain, then tears down.
-- **Scope**: browser-compatible server. Message cap = `server_options_t::max_body_bytes`.
-  Out of scope: permessage-deflate, a WS *client*, subprotocol negotiation.
+- **Reverse-proxy passthrough** (`reverse_proxy.cpp`): `reverse_proxy_t::install`
+  registers `app.ws("/{path...}", ws_handler())` alongside the HTTP `any()` route.
+  On a WS upgrade the browser side is handled by the normal hijack (prism writes
+  the 101 from the browser's key); `proxy_websocket` then dials the backend with
+  the WS `client`, forwarding the browser's headers minus the handshake-specific
+  ones, and runs two `relay_direction` coroutines that shuttle whole messages both
+  ways until either side closes. `dispatch` skips `websocket` routes so a non-upgrade
+  GET to `/{path...}` still falls through to the HTTP handler. (h2 over ALPN can't
+  carry a WS without RFC 8441, which prism does not implement — browsers fall back
+  to an HTTP/1.1 WS, which this path handles.)
+- **Scope**: browser-compatible server + a proxy WS client. Message cap =
+  `server_options_t::max_body_bytes`. Out of scope: permessage-deflate, RFC 8441
+  (WS over HTTP/2), end-to-end subprotocol negotiation through the proxy.
 - **Tests** (`tests/websocket_tests.cpp`): frame parse/serialize + masking +
-  control-frame + RFC 6455 vectors, `accept_key` (RFC example), and in-process
-  handshake/echo/close + fragmentation e2e over loopback TCP; ASan + TSan clean.
+  control-frame + RFC 6455 vectors, `accept_key` (RFC example), in-process
+  handshake/echo/close + fragmentation e2e over loopback TCP, and a reverse-proxy
+  tunnel e2e (backend `app.ws` echo behind a `reverse_proxy`); ASan + TSan clean.
   Example: `examples/hello_websocket.cpp` (browser page + `/ws` echo; also
   `websocat ws://127.0.0.1:8080/ws`).
 

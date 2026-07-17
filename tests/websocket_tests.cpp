@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,6 +12,7 @@
 #include <prism/detail/server.h>
 #include <prism/detail/websocket/frame.h>
 #include <prism/detail/websocket/handshake.h>
+#include <prism/reverse_proxy.h>
 #include <prism/router.h>
 #include <prism/server_options.h>
 #include <prism/websocket.h>
@@ -258,6 +260,75 @@ vio::task_t<ws_exchange_t> run_ws_case(vio::event_loop_t &loop, std::string path
   CHECK(serve_result.has_value());
   co_return result;
 }
+
+vio::task_t<void> echo_handler(std::shared_ptr<prism::ws_connection_t> connection)
+{
+  for (;;)
+  {
+    prism::ws_message_t message = co_await connection->receive();
+    if (!message.ok)
+    {
+      break;
+    }
+    if (message.is_text)
+    {
+      co_await connection->send_text(message.data);
+    }
+    else
+    {
+      co_await connection->send_binary(std::as_bytes(std::span<const char>(message.data.data(), message.data.size())));
+    }
+  }
+}
+
+struct bound_server_t
+{
+  vio::tcp_server_t server;
+  int port;
+};
+
+bound_server_t bind_ephemeral(vio::event_loop_t &loop)
+{
+  auto addr = vio::ip4_addr("127.0.0.1", 0);
+  REQUIRE(addr.has_value());
+  auto server = vio::tcp_create_server(loop);
+  REQUIRE(server.has_value());
+  auto bound = vio::tcp_bind(server.value(), reinterpret_cast<const sockaddr *>(&addr.value()));
+  REQUIRE(bound.has_value());
+  auto bound_name = vio::sockname(server->tcp);
+  REQUIRE(bound_name.has_value());
+  int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
+  return bound_server_t{std::move(server.value()), port};
+}
+
+vio::task_t<ws_exchange_t> run_ws_proxy_case(vio::event_loop_t &loop, std::string path, std::string send_frames)
+{
+  prism::app_t backend_app;
+  backend_app.ws("/echo", echo_handler);
+  bound_server_t backend = bind_ephemeral(loop);
+  int backend_port = backend.port;
+  vio::cancellation_t backend_cancel;
+  auto backend_task = prism::detail::serve(std::move(backend.server), std::make_shared<const prism::router_t>(backend_app.router()), nullptr, &backend_cancel, prism::server_options_t{});
+
+  prism::app_t gateway_app;
+  prism::reverse_proxy_t proxy;
+  proxy.add_route("localhost", prism::backend_t{"127.0.0.1", static_cast<std::uint16_t>(backend_port)});
+  proxy.install(gateway_app);
+  bound_server_t gateway = bind_ephemeral(loop);
+  int gateway_port = gateway.port;
+  vio::cancellation_t gateway_cancel;
+  auto gateway_task = prism::detail::serve(std::move(gateway.server), std::make_shared<const prism::router_t>(gateway_app.router()), nullptr, &gateway_cancel, prism::server_options_t{});
+
+  ws_exchange_t result = co_await run_ws_client(loop, gateway_port, std::move(path), std::move(send_frames));
+
+  gateway_cancel.cancel();
+  auto gateway_result = co_await std::move(gateway_task);
+  CHECK(gateway_result.has_value());
+  backend_cancel.cancel();
+  auto backend_result = co_await std::move(backend_task);
+  CHECK(backend_result.has_value());
+  co_return result;
+}
 } // namespace
 
 TEST_CASE("websocket: serialize an unmasked server text frame")
@@ -385,6 +456,22 @@ TEST_CASE("websocket: the server reassembles fragmented messages before echoing"
       ws_exchange_t result = co_await run_ws_case(loop, "/echo", std::move(frames));
       CHECK(result.echo_opcode == 0x1);
       CHECK(result.echo_payload == "hello");
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("websocket: a reverse proxy tunnels the handshake, echo, and close")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      ws_exchange_t result = co_await run_ws_proxy_case(loop, "/echo", mask_frame(0x1, "through-proxy"));
+      CHECK(result.handshake.find("HTTP/1.1 101 Switching Protocols") != std::string::npos);
+      CHECK(result.handshake.find("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") != std::string::npos);
+      CHECK(result.echo_opcode == 0x1);
+      CHECK(result.echo_payload == "through-proxy");
+      CHECK(result.close_opcode == 0x8);
       co_return 0;
     });
   CHECK(rc == 0);

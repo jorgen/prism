@@ -41,6 +41,7 @@ set(sources
         prism/detail/http2/server.cpp
         prism/detail/websocket/frame.cpp
         prism/detail/websocket/handshake.cpp
+        prism/detail/websocket/client.cpp
 )
 
 add_library(prism ${public_headers} ${sources})

@@ -48,6 +48,7 @@ enum class frame_status_t : std::uint8_t
 bool is_control(opcode_t opcode);
 
 std::string serialize_frame(opcode_t opcode, std::string_view payload, bool fin = true);
+std::string serialize_masked_frame(opcode_t opcode, std::string_view payload, const std::uint8_t mask_key[4], bool fin = true);
 std::string serialize_close(std::uint16_t code, std::string_view reason);
 
 // Incremental parser for inbound (client → server) frames. Client frames are
@@ -68,6 +69,10 @@ public:
   {
     _max_frame = bytes;
   }
+  void set_expect_masked(bool expect)
+  {
+    _expect_masked = expect;
+  }
 
 private:
   bool try_parse_one();
@@ -76,6 +81,7 @@ private:
   std::deque<frame_t> _ready;
   std::size_t _max_frame = 16 * 1024 * 1024;
   bool _failed = false;
+  bool _expect_masked = true;
   std::uint16_t _close_code = close_code::protocol_error;
 };
 } // namespace prism::detail::websocket
