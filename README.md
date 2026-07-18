@@ -55,6 +55,10 @@ message: hello ada
   ALPN**, passing the full [h2spec](https://github.com/summerwind/h2spec)
   conformance suite. Your handlers don't change — HTTP/2 is just another transport
   under the same request/response/routing/negotiation layers.
+- **WebSockets** — `app.ws(pattern, handler)` runs a long-lived coroutine per
+  connection, and one handler serves `ws://`, `wss://`, and WebSocket over HTTP/2
+  (RFC 8441); outbound sends are queued through the connection's writer, so
+  pushing from a pub/sub broadcast or a timer is safe.
 - **Typed route parameters** — bind `path_t<"id", int>`,
   `query_t<"q", std::optional<int>>`, and `body_t<T>` (parsed by `Content-Type`)
   straight into the handler signature; prism parses, validates, and answers `400`
@@ -357,6 +361,95 @@ co_return (co_await app.listen_tls(loop, "0.0.0.0", 8443, tls)).has_value() ? 0 
   DATA frames on HTTP/2, so a large streamed body respects the client's window.
 - **Timeouts are coarser than HTTP/1.1.** The read loop uses a connection-level
   idle/header timeout rather than per-stream deadlines (future work).
+- **WebSockets ride HTTP/2 too.** With any `app.ws` route registered, prism
+  advertises `SETTINGS_ENABLE_CONNECT_PROTOCOL`, so a browser opens the WebSocket
+  on the same h2 connection via RFC 8441 Extended CONNECT instead of falling back
+  to HTTP/1.1 — one handler covers both. See [WebSocket](#websocket).
+
+## WebSocket
+
+`app.ws(pattern, handler)` registers a WebSocket route. The handler is a
+long-lived **free-function coroutine** that takes the connection by
+`std::shared_ptr<ws_connection_t>` (the vio dangling-`this` rule — never a
+capturing coroutine lambda) and drives it: `co_await receive()` pulls inbound
+`ws_message_t`s until `.ok` is `false` (the peer closed), `co_await
+send_text(string_view)` / `send_binary(span<const std::byte>)` push outbound
+ones, `close(code = 1000, reason = "")` ends it, and `request()` exposes the
+upgraded `request_t` (path params via `request().param("name")`, headers, loop,
+per-thread factories).
+
+```cpp
+vio::task_t<void> echo(std::shared_ptr<prism::ws_connection_t> conn)
+{
+  co_await conn->send_text("welcome");
+  for (;;)
+  {
+    prism::ws_message_t msg = co_await conn->receive();
+    if (!msg.ok) break;                       // peer closed — no more messages
+    co_await conn->send_text("echo: " + msg.data);
+  }
+}
+
+app.ws("/ws", echo);                          // one handler, every transport
+```
+
+- **One handler, every transport** — the same coroutine serves `ws://` over
+  HTTP/1.1, `wss://` over TLS, and WebSocket over HTTP/2 via RFC 8441 Extended
+  CONNECT. Whenever a `ws` route exists prism advertises
+  `SETTINGS_ENABLE_CONNECT_PROTOCOL` on h2, so a browser that keeps the connection
+  on h2 opens the WebSocket on *that same connection* instead of failing the
+  upgrade or forcing an HTTP/1.1 fallback. Handler code is identical regardless of
+  transport.
+- **Push from any coroutine** — outbound frames are queued through the
+  connection's own single-flight writer, so calling `send_text` / `send_binary`
+  from a *different* coroutine — a pub/sub broadcast, a timer — is safe, not only
+  from inside the handler. This is the enabler for fan-out and server push.
+- **Protocol plumbing is internal** — ping/pong and the close handshake are
+  handled for you, and fragmented messages are reassembled before delivery.
+- **Keepalive reaps dead peers** — after `server_options_t::ws_ping_interval` of
+  inbound silence (default 30 s; `0` disables) prism sends a Ping and, if a second
+  interval passes with no Pong or frame, closes the connection — so a wedged or
+  vanished peer is reaped instead of pinning it. Works over HTTP/1.1 and HTTP/2.
+- Message size is capped by `max_body_bytes`; permessage-deflate and subprotocol
+  negotiation are out of scope.
+
+See [`examples/hello_websocket.cpp`](examples/hello_websocket.cpp) — a `/ws` echo
+endpoint plus a tiny browser page (or try `websocat ws://127.0.0.1:8080/ws`).
+
+## Reverse proxy
+
+`prism::reverse_proxy_t` does host-based reverse proxying: `add_route(host,
+backend_t{host, port})` maps an incoming `Host` — the `Host` header on HTTP/1.1,
+or the `:authority` pseudo-header on HTTP/2 — to a backend, and `install(app)`
+registers **both** the HTTP passthrough (any method, any path) and the WebSocket
+passthrough in one call.
+
+```cpp
+prism::app_t app;
+prism::reverse_proxy_t proxy;
+
+proxy.add_route("app.example.com", prism::backend_t{"127.0.0.1", 9001});
+proxy.add_route("api.example.com", prism::backend_t{"127.0.0.1", 9002});
+proxy.install(app);                           // HTTP + WebSocket, in one call
+
+co_return (co_await app.listen(loop, "", 8080)).has_value() ? 0 : 1;
+```
+
+- **Host → backend** — `backend_t` is `{ std::string host; std::uint16_t port; }`;
+  an incoming host that matches a route is forwarded there, HTTP requests and
+  WebSocket upgrades alike.
+- **Wire it by hand if you prefer** — `proxy.handler()` returns a `handler_t` and
+  `proxy.ws_handler()` a `ws_handler_t`, so `app.any(pattern, proxy.handler())`
+  and `app.ws(pattern, proxy.ws_handler())` do exactly what `install` does.
+- **Which hop speaks what** — the browser-to-gateway hop runs over HTTP/1.1 *or*
+  HTTP/2 (WebSockets via RFC 8441); the gateway-to-backend hop is HTTP/1.1.
+- **Terminate TLS at the edge** — pair with `app.listen_tls` so the proxy
+  terminates TLS and speaks HTTP/2 to browsers while reaching backends over
+  cleartext HTTP/1.1.
+
+See [`examples/reverse_proxy.cpp`](examples/reverse_proxy.cpp) — host-based
+routing configured from the command line, with HTTP and WebSocket passthrough
+wired via `install()`.
 
 ## Running the server
 
@@ -573,6 +666,11 @@ installed); it installs the library and headers otherwise.
   try `curl --http2-prior-knowledge -v http://127.0.0.1:8080/health`.
 - [`examples/hello_h2tls.cpp`](examples/hello_h2tls.cpp) — HTTP/2 over TLS with
   ALPN; takes `cert.pem key.pem` on the command line.
+- [`examples/hello_websocket.cpp`](examples/hello_websocket.cpp) — a `/ws` echo
+  endpoint plus a tiny browser page; also try `websocat ws://127.0.0.1:8080/ws`.
+- [`examples/reverse_proxy.cpp`](examples/reverse_proxy.cpp) — a host-based reverse
+  proxy (HTTP + WebSocket passthrough via `install()`) with routes given as
+  `host=backend_host:port` on the command line.
 - [`examples/webapp.cpp`](examples/webapp.cpp) — a REST API plus a static site
   (`examples/webroot/`) served from one prism app via `static_files`.
 - [`examples/react-app/`](examples/react-app) — a TypeScript **React + Vite** app:

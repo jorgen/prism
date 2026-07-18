@@ -10,6 +10,9 @@ target_link_libraries(hello_h2c PRIVATE prism vio::vio)
 add_executable(hello_websocket hello_websocket.cpp)
 target_link_libraries(hello_websocket PRIVATE prism vio::vio)
 
+add_executable(reverse_proxy reverse_proxy.cpp)
+target_link_libraries(reverse_proxy PRIVATE prism vio::vio)
+
 add_executable(upload_stream upload_stream.cpp)
 target_link_libraries(upload_stream PRIVATE prism vio::vio)
 
