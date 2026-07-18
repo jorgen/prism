@@ -19,8 +19,11 @@ jobs:
           - name: tsan
             flags: -fsanitize=thread -fno-omit-frame-pointer
             linker: -fsanitize=thread
+          # -fno-sanitize=vptr: the bundled ada URL parser trips the vptr check in
+          # its own headers (ada/url_base.h); prism's code is -fno-rtti so it has no
+          # vptr instrumentation anyway, so excluding it loses no coverage of prism.
           - name: ubsan
-            flags: -fsanitize=undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
+            flags: -fsanitize=undefined -fno-sanitize=vptr -fno-omit-frame-pointer -fno-sanitize-recover=all
             linker: -fsanitize=undefined
     name: ${{ matrix.name }}
 
