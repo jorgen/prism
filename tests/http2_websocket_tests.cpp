@@ -228,6 +228,147 @@ vio::task_t<h2ws_result_t> run_h2_ws(vio::event_loop_t &loop)
   co_return result;
 }
 
+struct h2ws_reject_t
+{
+  int status = 0;
+  bool got_close = false;
+  std::uint16_t close_code = 0;
+  bool stream_ended = false;
+};
+
+vio::task_t<h2ws_reject_t> run_h2_ws_unmasked(vio::event_loop_t &loop)
+{
+  h2ws_reject_t result;
+
+  prism::app_t app;
+  app.ws("/echo", ws_echo);
+
+  auto addr = vio::ip4_addr("127.0.0.1", 0);
+  REQUIRE(addr.has_value());
+  auto server = vio::tcp_create_server(loop);
+  REQUIRE(server.has_value());
+  REQUIRE(vio::tcp_bind(server.value(), reinterpret_cast<const sockaddr *>(&addr.value())).has_value());
+  auto bound_name = vio::sockname(server->tcp);
+  REQUIRE(bound_name.has_value());
+  int port = ntohs(reinterpret_cast<const sockaddr_in *>(&bound_name.value())->sin_port);
+
+  prism::server_options_t options;
+  options.protocol = prism::protocol_t::h2c;
+  vio::cancellation_t cancel;
+  auto server_task = prism::detail::serve(std::move(server.value()), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, options);
+
+  auto client_or_error = vio::tcp_create(loop);
+  REQUIRE(client_or_error.has_value());
+  auto client = std::move(client_or_error.value());
+  auto caddr = vio::ip4_addr("127.0.0.1", port);
+  REQUIRE(caddr.has_value());
+  auto connected = co_await vio::tcp_connect(client, reinterpret_cast<const sockaddr *>(&caddr.value()));
+  REQUIRE(connected.has_value());
+
+  auto send = [&](std::string bytes) -> vio::task_t<bool>
+  {
+    auto wrote = co_await vio::write_tcp(client, reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
+    co_return wrote.has_value();
+  };
+
+  std::string preamble(connection_preface);
+  preamble += serialize_settings({});
+  preamble += extended_connect_headers(1, "/echo");
+  REQUIRE(co_await send(std::move(preamble)));
+
+  auto reader_or_error = vio::tcp_create_reader(client);
+  REQUIRE(reader_or_error.has_value());
+  auto reader = std::move(reader_or_error.value());
+
+  vio::cancellation_t rtoken;
+  auto watchdog = [](vio::event_loop_t &el, vio::tcp_reader_t &rd, vio::cancellation_t &tok) -> vio::task_t<void>
+  {
+    auto fired = co_await vio::sleep(el, std::chrono::seconds{5}, &tok);
+    if (fired.has_value() && !tok.is_cancelled())
+    {
+      rd.cancel();
+    }
+  }(loop, reader, rtoken);
+
+  frame_reader_t frames;
+  hpack_decoder_t decoder;
+  wsf::frame_reader_t ws_in;
+  ws_in.set_expect_masked(false);
+  bool unmasked_sent = false;
+
+  while (!result.stream_ended)
+  {
+    auto read = co_await reader;
+    if (!read.has_value())
+    {
+      break;
+    }
+    frames.feed(read.value()->base, read.value()->len);
+    while (frames.has_frame())
+    {
+      frame_t frame = frames.take_frame();
+      if (frame.header.type == frame_type_t::settings && !frame.header.has_flag(0x1))
+      {
+        REQUIRE(co_await send(serialize_settings_ack()));
+      }
+      else if (frame.header.type == frame_type_t::headers && frame.header.stream_id == 1)
+      {
+        bool ok = false;
+        std::string_view block = headers_block_fragment(frame.header, frame.payload, ok);
+        std::vector<hpack_header_t> decoded;
+        if (ok && decoder.decode(block, decoded))
+        {
+          for (const hpack_header_t &h : decoded)
+          {
+            if (h.name == ":status")
+            {
+              std::from_chars(h.value.data(), h.value.data() + h.value.size(), result.status);
+            }
+          }
+        }
+      }
+      else if (frame.header.type == frame_type_t::data && frame.header.stream_id == 1)
+      {
+        bool ok = false;
+        std::string_view payload = data_without_padding(frame.header, frame.payload, ok);
+        if (ok)
+        {
+          ws_in.feed(payload.data(), payload.size());
+        }
+        while (ws_in.has_frame())
+        {
+          wsf::frame_t wf = ws_in.take_frame();
+          if (wf.opcode == wsf::opcode_t::close)
+          {
+            result.got_close = true;
+            if (wf.payload.size() >= 2)
+            {
+              result.close_code = static_cast<std::uint16_t>((static_cast<std::uint8_t>(wf.payload[0]) << 8) | static_cast<std::uint8_t>(wf.payload[1]));
+            }
+          }
+        }
+        if (frame.header.has_flag(frame_flag::end_stream))
+        {
+          result.stream_ended = true;
+        }
+      }
+    }
+
+    if (result.status == 200 && !unmasked_sent)
+    {
+      unmasked_sent = true;
+      REQUIRE(co_await send(serialize_data(1, wsf::serialize_frame(wsf::opcode_t::text, "unmasked", true), false)));
+    }
+  }
+
+  rtoken.cancel();
+  co_await std::move(watchdog);
+  cancel.cancel();
+  auto serve_result = co_await std::move(server_task);
+  CHECK(serve_result.has_value());
+  co_return result;
+}
+
 vio::task_t<bool> run_h2_settings_probe(vio::event_loop_t &loop, bool with_ws)
 {
   prism::app_t app;
@@ -459,6 +600,21 @@ TEST_CASE("h2 8441: enable_connect_protocol is advertised only when a websocket 
       bool without_ws = co_await run_h2_settings_probe(loop, false);
       CHECK(with_ws);
       CHECK_FALSE(without_ws);
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("h2 8441: an unmasked client WebSocket frame over an h2 DATA frame is rejected")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      h2ws_reject_t result = co_await run_h2_ws_unmasked(loop);
+      CHECK(result.status == 200);
+      CHECK(result.got_close);
+      CHECK(result.close_code == wsf::close_code::protocol_error);
+      CHECK(result.stream_ended);
       co_return 0;
     });
   CHECK(rc == 0);
