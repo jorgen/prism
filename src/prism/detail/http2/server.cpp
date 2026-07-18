@@ -21,7 +21,10 @@
 #include <vio/unique_buf.h>
 
 #include "../io_timeout.h"
+#include "../websocket/connection.h"
 #include "connection.h"
+#include "../../router.h"
+#include "../../websocket.h"
 
 namespace prism::detail::http2
 {
@@ -35,7 +38,7 @@ void emit(const std::shared_ptr<const logger_t> &logger, log_level_t level, std:
   }
 }
 
-inline h2_settings_t h2_settings_from(const server_options_t &options)
+inline h2_settings_t h2_settings_from(const server_options_t &options, const router_t &router)
 {
   h2_settings_t settings;
   if (options.max_body_bytes != 0)
@@ -46,6 +49,7 @@ inline h2_settings_t h2_settings_from(const server_options_t &options)
   {
     settings.max_header_list_size = static_cast<std::uint32_t>(options.max_header_bytes);
   }
+  settings.enable_connect_protocol = router.has_websocket_routes();
   return settings;
 }
 
@@ -58,7 +62,7 @@ struct conn_ctx_t
     , router(std::move(r))
     , logger(std::move(l))
     , options(o)
-    , conn(h2_settings_from(o), [routes = router](method_t method, std::string_view path) { return routes->is_streaming(method, path); })
+    , conn(h2_settings_from(o, *router), [routes = router](method_t method, std::string_view path) { return routes->is_streaming(method, path); }, [routes = router](std::string_view path) { return routes->resolve(method_t::get, path).websocket; })
   {
   }
 
@@ -260,6 +264,111 @@ private:
 };
 
 template <typename Transport>
+struct h2_stream_transport_t
+{
+  std::shared_ptr<conn_ctx_t<Transport>> ctx;
+  std::uint32_t stream_id = 0;
+  bool cancelled = false;
+  bool finished = false;
+
+  vio::task_t<read_outcome_t> read(std::chrono::milliseconds /*timeout*/, vio::unique_buf_t &out)
+  {
+    for (;;)
+    {
+      if (cancelled)
+      {
+        co_return read_outcome_t::error;
+      }
+      std::string data;
+      bool last = false;
+      if (ctx->conn.take_inbound_chunk(stream_id, data, last))
+      {
+        ctx->conn.inbound_consume(stream_id, data.size());
+        request_flush(ctx);
+        if (!data.empty())
+        {
+          char *base = new char[data.size()];
+          std::memcpy(base, data.data(), data.size());
+          uv_buf_t buf;
+          buf.base = base;
+          buf.len = static_cast<decltype(buf.len)>(data.size());
+          out = vio::unique_buf_t{buf, vio::default_dealloc, nullptr};
+          co_return read_outcome_t::data;
+        }
+        if (last)
+        {
+          co_return read_outcome_t::eof;
+        }
+        continue;
+      }
+      if (ctx->conn.inbound_aborted(stream_id) || ctx->write_dead || ctx->closing)
+      {
+        co_return read_outcome_t::error;
+      }
+      if (ctx->conn.inbound_ended(stream_id))
+      {
+        co_return read_outcome_t::eof;
+      }
+      co_await inbound_gate_t<Transport>{ctx, stream_id};
+      if (cancelled)
+      {
+        co_return read_outcome_t::error;
+      }
+    }
+  }
+
+  vio::task_t<write_outcome_t> write(std::string wire, std::chrono::milliseconds timeout)
+  {
+    if (ctx->write_dead || ctx->closing || ctx->conn.failed())
+    {
+      co_return write_outcome_t::failed;
+    }
+    ctx->conn.push_stream_data(stream_id, wire, false);
+    request_flush(ctx);
+    if (ctx->conn.stream_send_pending(stream_id) > 0 && timeout > std::chrono::milliseconds::zero())
+    {
+      vio::cancellation_t token;
+      auto watchdog = [](std::shared_ptr<conn_ctx_t<Transport>> c, vio::cancellation_t &tok, std::chrono::milliseconds dur) -> vio::task_t<void>
+      {
+        auto fired = co_await vio::sleep(c->loop, dur, &tok);
+        if (fired.has_value() && !tok.is_cancelled())
+        {
+          c->write_dead = true;
+          wake_flow(*c);
+        }
+      }(ctx, token, timeout);
+      while (ctx->conn.stream_send_pending(stream_id) > 0 && !ctx->write_dead && !ctx->closing)
+      {
+        co_await flow_gate_t<Transport>{ctx};
+      }
+      token.cancel();
+      co_await std::move(watchdog);
+    }
+    co_return (ctx->write_dead || ctx->closing) ? write_outcome_t::failed : write_outcome_t::ok;
+  }
+
+  void cancel_read()
+  {
+    cancelled = true;
+    ctx->conn.wake_inbound(stream_id);
+  }
+
+  void finish()
+  {
+    if (finished)
+    {
+      return;
+    }
+    finished = true;
+    if (!ctx->write_dead && !ctx->closing)
+    {
+      ctx->conn.push_stream_data(stream_id, {}, true);
+      request_flush(ctx);
+    }
+  }
+};
+
+template <typename Transport>
 void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> state, ready_request_t request)
 {
   ++state->inflight;
@@ -269,6 +378,27 @@ void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> state, ready_request_t
     std::uint32_t stream_id = ready.stream_id;
     bool head = ready.head;
     bool streaming = ready.streaming;
+
+    if (ready.websocket)
+    {
+      ws_handler_t handler = ctx->router->match_websocket(ready.request);
+      if (handler && !ctx->conn.inbound_aborted(stream_id) && !ctx->closing && !ctx->write_dead)
+      {
+        ctx->conn.begin_streaming_response(stream_id, response_t{}, false);
+        request_flush(ctx);
+        h2_stream_transport_t<Transport> transport{ctx, stream_id, false, false};
+        co_await websocket::run_websocket<h2_stream_transport_t<Transport>>(std::move(transport), std::move(ready.request), std::move(handler), ctx->loop, ctx->options);
+      }
+      else
+      {
+        ctx->conn.reset_stream(stream_id, error_code_t::refused_stream);
+        request_flush(ctx);
+      }
+      --ctx->inflight;
+      request_flush(std::move(ctx));
+      co_return;
+    }
+
     if (streaming)
     {
       ready.request.body_reader = std::make_shared<request_body_h2_t<Transport>>(ctx, stream_id);

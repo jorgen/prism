@@ -101,6 +101,8 @@ public:
   // empty handler means no WebSocket route matched.
   [[nodiscard]] ws_handler_t match_websocket(request_t &request) const;
 
+  [[nodiscard]] bool has_websocket_routes() const;
+
   // Register a factory that produces one instance of T per thread (per event
   // loop). Handlers receive it via a prism::per_thread<T> parameter. Call before
   // listen(); one factory per type (last registration for a type wins).

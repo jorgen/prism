@@ -18,6 +18,7 @@
 #include <prism/websocket.h>
 
 #include <vio/cancellation.h>
+#include <vio/operation/sleep.h>
 #include <vio/operation/tcp.h>
 #include <vio/operation/tcp_server.h>
 #include <vio/run.h>
@@ -329,6 +330,145 @@ vio::task_t<ws_exchange_t> run_ws_proxy_case(vio::event_loop_t &loop, std::strin
   CHECK(backend_result.has_value());
   co_return result;
 }
+
+struct ws_keepalive_t
+{
+  bool got_ping = false;
+  std::uint8_t close_opcode = 0;
+  std::uint16_t close_code = 0;
+  bool ended = false;
+};
+
+vio::task_t<ws_keepalive_t> run_ws_silent_client(vio::event_loop_t &loop, int port, std::string path)
+{
+  ws_keepalive_t result;
+  auto client_or_error = vio::tcp_create(loop);
+  if (!client_or_error.has_value())
+  {
+    co_return result;
+  }
+  auto client = std::move(client_or_error.value());
+  auto addr = vio::ip4_addr("127.0.0.1", port);
+  if (!addr.has_value())
+  {
+    co_return result;
+  }
+  auto connect = co_await vio::tcp_connect(client, reinterpret_cast<const sockaddr *>(&addr.value()));
+  if (!connect.has_value())
+  {
+    co_return result;
+  }
+
+  std::string upgrade = "GET " + path +
+                        " HTTP/1.1\r\n"
+                        "Host: localhost\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                        "Sec-WebSocket-Version: 13\r\n\r\n";
+  auto wrote = co_await vio::write_tcp(client, reinterpret_cast<const uint8_t *>(upgrade.data()), upgrade.size());
+  if (!wrote.has_value())
+  {
+    co_return result;
+  }
+
+  auto reader_or_error = vio::tcp_create_reader(client);
+  if (!reader_or_error.has_value())
+  {
+    co_return result;
+  }
+  auto reader = std::move(reader_or_error.value());
+
+  vio::cancellation_t token;
+  auto watchdog = [](vio::event_loop_t &el, vio::tcp_reader_t &rd, vio::cancellation_t &tok) -> vio::task_t<void>
+  {
+    auto fired = co_await vio::sleep(el, std::chrono::seconds{3}, &tok);
+    if (fired.has_value() && !tok.is_cancelled())
+    {
+      rd.cancel();
+    }
+  }(loop, reader, token);
+
+  std::string buffer;
+  while (buffer.find("\r\n\r\n") == std::string::npos)
+  {
+    auto read = co_await reader;
+    if (!read.has_value())
+    {
+      token.cancel();
+      co_await std::move(watchdog);
+      co_return result;
+    }
+    buffer.append(read.value()->base, read.value()->len);
+  }
+  buffer.erase(0, buffer.find("\r\n\r\n") + 4);
+
+  bool reading = true;
+  while (reading)
+  {
+    for (;;)
+    {
+      server_frame_t frame = parse_server_frame(buffer);
+      if (!frame.ok)
+      {
+        break;
+      }
+      if (frame.opcode == 0x9)
+      {
+        result.got_ping = true;
+      }
+      if (frame.opcode == 0x8)
+      {
+        result.close_opcode = frame.opcode;
+        if (frame.payload.size() >= 2)
+        {
+          result.close_code = static_cast<std::uint16_t>((static_cast<std::uint8_t>(frame.payload[0]) << 8) | static_cast<std::uint8_t>(frame.payload[1]));
+        }
+        reading = false;
+      }
+      buffer.erase(0, frame.consumed);
+      if (!reading)
+      {
+        break;
+      }
+    }
+    if (!reading)
+    {
+      break;
+    }
+    auto read = co_await reader;
+    if (!read.has_value())
+    {
+      result.ended = true;
+      break;
+    }
+    buffer.append(read.value()->base, read.value()->len);
+  }
+
+  token.cancel();
+  co_await std::move(watchdog);
+  co_return result;
+}
+
+vio::task_t<ws_keepalive_t> run_ws_keepalive_case(vio::event_loop_t &loop)
+{
+  prism::app_t app;
+  app.ws("/echo", echo_handler);
+
+  bound_server_t bound = bind_ephemeral(loop);
+  int port = bound.port;
+  prism::server_options_t options;
+  options.ws_ping_interval = std::chrono::milliseconds{60};
+  vio::cancellation_t cancel;
+  auto server_task = prism::detail::serve(std::move(bound.server), std::make_shared<const prism::router_t>(app.router()), nullptr, &cancel, options);
+
+  ws_keepalive_t result = co_await run_ws_silent_client(loop, port, "/echo");
+
+  cancel.cancel();
+  auto serve_result = co_await std::move(server_task);
+  CHECK(serve_result.has_value());
+  co_return result;
+}
 } // namespace
 
 TEST_CASE("websocket: serialize an unmasked server text frame")
@@ -442,6 +582,20 @@ TEST_CASE("websocket: handshake, echo, and close end to end over TCP")
       CHECK(result.echo_opcode == 0x1);
       CHECK(result.echo_payload == "hello");
       CHECK(result.close_opcode == 0x8);
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}
+
+TEST_CASE("websocket: an idle connection is pinged then closed when the peer never responds")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &loop) -> vio::task_t<int>
+    {
+      ws_keepalive_t result = co_await run_ws_keepalive_case(loop);
+      CHECK(result.got_ping);
+      CHECK(result.close_opcode == 0x8);
+      CHECK(result.close_code == prism::detail::websocket::close_code::going_away);
       co_return 0;
     });
   CHECK(rc == 0);

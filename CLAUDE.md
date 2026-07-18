@@ -510,8 +510,10 @@ lambda, never a capturing coroutine lambda.
   binds path params + returns the handler, then it writes `101 Switching Protocols`
   with `Sec-WebSocket-Accept` and `co_await`s `run_websocket<Transport>` for the
   connection's lifetime. Templated on the transport, so **`ws://` and `wss://` share
-  one code path** (a `wss` client must negotiate `http/1.1` via ALPN — there is no
-  RFC 8441 h2 WebSocket).
+  one code path**. Over HTTP/1.1 a `wss` client negotiates `http/1.1` via ALPN; over
+  HTTP/2 the same `run_websocket` driver is reached through the RFC 8441 Extended
+  CONNECT path (see below), so a browser that keeps the connection on `h2` still gets
+  a working WebSocket.
 - **Driver** (`detail/websocket/connection.h`): a `shared_ptr<ws_state_t>` co-owned
   by an eager **read pump** (`co_await transport.read` → `frame_reader_t` → answer
   ping, echo close, reassemble text/binary fragments, deliver whole messages to
@@ -521,6 +523,26 @@ lambda, never a capturing coroutine lambda.
   `receive()` parks on a gate until a message or close; `close()` queues a Close
   frame and `cancel()`s the reader to unblock the pump. The socket lives (via the
   shared_ptr) until the pump + writer both drain, then tears down.
+- **Liveness / keepalive** (`server_options_t::ws_ping_interval`, default 30 s, 0
+  disables): a per-connection coroutine started by `run_websocket` pings after an
+  interval of inbound silence and closes with `going_away` after a second silent
+  interval (no Pong/frame) — so a wedged or vanished peer is reaped rather than
+  holding the stream/connection open. Any inbound byte clears the idle state. This
+  runs on both transports (h1 and the h2/8441 path).
+- **RFC 8441 (WebSocket over HTTP/2)** (`detail/http2/`): when the router has any
+  `app.ws` route the h2 server advertises `SETTINGS_ENABLE_CONNECT_PROTOCOL`. A
+  client's Extended CONNECT (`:method=CONNECT`, `:protocol=websocket`, plus
+  `:scheme`/`:path`/`:authority`) is resolved at **END_HEADERS** (a CONNECT never
+  sends END_STREAM): `connection_t` checks the path against the ws router and, if it
+  matches, replies `:status 200` (no END_STREAM) and hijacks the stream via
+  `h2_stream_transport_t` — an adapter satisfying the ws driver's Transport concept
+  (inbound DATA payloads → `read`, `write` → DATA frames, `cancel_read` wakes a
+  parked read without RST, `finish` sends the terminal END_STREAM once the Close
+  frame drains). RFC 6455 frames (masked client→server) ride inside DATA frames and
+  the WS close maps to END_STREAM. **Any** CONNECT that is not a matched ws tunnel
+  (wrong path, missing `:protocol`, classic CONNECT) is `RST_STREAM(REFUSED_STREAM)`'d
+  at END_HEADERS so it never occupies a stream slot. Per-stream inbound flow control
+  and the total-streams cap apply as for any h2 stream.
 - **Reverse-proxy passthrough** (`reverse_proxy.cpp`): `reverse_proxy_t::install`
   registers `app.ws("/{path...}", ws_handler())` alongside the HTTP `any()` route.
   On a WS upgrade the browser side is handled by the normal hijack (prism writes
@@ -528,18 +550,23 @@ lambda, never a capturing coroutine lambda.
   the WS `client`, forwarding the browser's headers minus the handshake-specific
   ones, and runs two `relay_direction` coroutines that shuttle whole messages both
   ways until either side closes. `dispatch` skips `websocket` routes so a non-upgrade
-  GET to `/{path...}` still falls through to the HTTP handler. (h2 over ALPN can't
-  carry a WS without RFC 8441, which prism does not implement — browsers fall back
-  to an HTTP/1.1 WS, which this path handles.)
-- **Scope**: browser-compatible server + a proxy WS client. Message cap =
-  `server_options_t::max_body_bytes`. Out of scope: permessage-deflate, RFC 8441
-  (WS over HTTP/2), end-to-end subprotocol negotiation through the proxy.
-- **Tests** (`tests/websocket_tests.cpp`): frame parse/serialize + masking +
-  control-frame + RFC 6455 vectors, `accept_key` (RFC example), in-process
-  handshake/echo/close + fragmentation e2e over loopback TCP, and a reverse-proxy
-  tunnel e2e (backend `app.ws` echo behind a `reverse_proxy`); ASan + TSan clean.
-  Example: `examples/hello_websocket.cpp` (browser page + `/ws` echo; also
-  `websocat ws://127.0.0.1:8080/ws`).
+  GET to `/{path...}` still falls through to the HTTP handler. The browser side works
+  over both HTTP/1.1 (Upgrade) and HTTP/2 (RFC 8441 Extended CONNECT); either way the
+  hijacked stream is handed to `proxy_websocket`, which dials the backend over an
+  HTTP/1.1 WS `client` and relays.
+- **Scope**: browser-compatible server (HTTP/1.1 + RFC 8441 over HTTP/2) + a proxy WS
+  client. Message cap = `server_options_t::max_body_bytes`. Out of scope:
+  permessage-deflate, an HTTP/2 WS *client* (the proxy dials backends over HTTP/1.1),
+  end-to-end subprotocol negotiation through the proxy.
+- **Tests** (`tests/websocket_tests.cpp`, `tests/http2_websocket_tests.cpp`): frame
+  parse/serialize + masking + control-frame + RFC 6455 vectors, `accept_key` (RFC
+  example), in-process handshake/echo/close + fragmentation e2e over loopback TCP, a
+  reverse-proxy tunnel e2e (backend `app.ws` echo behind a `reverse_proxy`), an idle
+  keepalive-close e2e, and — for RFC 8441 — an in-process h2 Extended CONNECT
+  echo+close, the `enable_connect_protocol` advertisement (present only with a ws
+  route), and an unmatched-CONNECT `REFUSED_STREAM`; ASan + TSan clean, and h2spec
+  stays 146/146 with the setting advertised. Examples: `examples/hello_websocket.cpp`
+  (browser page + `/ws` echo; also `websocat ws://127.0.0.1:8080/ws`).
 
 ### Conformance & hardening testing (tools)
 

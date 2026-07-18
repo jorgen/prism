@@ -286,6 +286,16 @@ struct tcp_transport_t
     }
   }
 
+  void cancel_read()
+  {
+    if (reader)
+    {
+      reader->cancel();
+    }
+  }
+
+  void finish() {}
+
   vio::task_t<write_outcome_t> write(std::string wire, std::chrono::milliseconds timeout)
   {
     return write_tcp_with_timeout(loop, socket, std::move(wire), timeout);
@@ -324,6 +334,16 @@ struct tls_transport_t
   {
     return tls_read_into_with_timeout(loop, *reader, dst, timeout);
   }
+
+  void cancel_read()
+  {
+    if (reader)
+    {
+      reader->cancel();
+    }
+  }
+
+  void finish() {}
 
   vio::task_t<write_outcome_t> write(std::string wire, std::chrono::milliseconds timeout)
   {

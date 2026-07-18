@@ -65,6 +65,7 @@ enum class settings_id_t : std::uint16_t
   initial_window_size = 0x4,
   max_frame_size = 0x5,
   max_header_list_size = 0x6,
+  enable_connect_protocol = 0x8,
 };
 
 struct frame_header_t

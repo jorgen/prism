@@ -123,6 +123,18 @@ bool router_t::is_streaming(method_t method, std::string_view path) const
   return resolve(method, path).streaming;
 }
 
+bool router_t::has_websocket_routes() const
+{
+  for (const auto &route : _routes)
+  {
+    if (route.websocket)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 ws_handler_t router_t::match_websocket(request_t &request) const
 {
   request.factories = _factories.get();

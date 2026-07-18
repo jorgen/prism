@@ -18,6 +18,7 @@ struct server_options_t
   std::chrono::milliseconds header_timeout = std::chrono::seconds{30};
   std::chrono::milliseconds body_timeout = std::chrono::seconds{60};
   std::chrono::milliseconds write_timeout = std::chrono::seconds{60};
+  std::chrono::milliseconds ws_ping_interval = std::chrono::seconds{30};
   std::uint32_t max_requests = 1000;
   std::uint32_t max_connections = 0;
 

@@ -60,8 +60,8 @@ std::uint32_t read_u32(const char *p)
 }
 } // namespace
 
-connection_t::connection_t(const h2_settings_t &local, std::function<bool(method_t, std::string_view)> is_streaming)
-  : _decoder(local.header_table_size), _local(local), _is_streaming(std::move(is_streaming))
+connection_t::connection_t(const h2_settings_t &local, std::function<bool(method_t, std::string_view)> is_streaming, std::function<bool(std::string_view)> is_websocket)
+  : _decoder(local.header_table_size), _local(local), _is_streaming(std::move(is_streaming)), _is_websocket(std::move(is_websocket))
 {
   _decoder.set_protocol_max_dynamic_size(_local.header_table_size);
   _decoder.set_max_list_bytes(_local.max_header_list_size);
@@ -78,6 +78,10 @@ void connection_t::start()
     {setting_key(settings_id_t::max_header_list_size), _local.max_header_list_size},
     {setting_key(settings_id_t::enable_push), 0},
   };
+  if (_local.enable_connect_protocol)
+  {
+    settings.push_back({setting_key(settings_id_t::enable_connect_protocol), 1});
+  }
   _out += serialize_settings(settings);
 }
 
@@ -254,6 +258,12 @@ bool connection_t::on_settings(const frame_t &frame)
         return connection_error(error_code_t::protocol_error);
       }
       break;
+    case settings_id_t::enable_connect_protocol:
+      if (s.value > 1)
+      {
+        return connection_error(error_code_t::protocol_error);
+      }
+      break;
     default:
       break;
     }
@@ -277,6 +287,11 @@ bool connection_t::on_headers(const frame_t &frame, std::vector<ready_request_t>
     if (existing->state == stream_state_t::open && existing->headers_complete && !existing->request_delivered)
     {
       trailers = true;
+    }
+    else if (existing->is_websocket)
+    {
+      queue_stream_reset(id, error_code_t::protocol_error);
+      return true;
     }
     else
     {
@@ -318,6 +333,11 @@ bool connection_t::on_headers(const frame_t &frame, std::vector<ready_request_t>
     stream.state = frame.header.has_flag(frame_flag::end_stream) ? stream_state_t::half_closed_remote : stream_state_t::open;
     stream.send_window = static_cast<std::int64_t>(_remote_initial_window);
     stream.recv_window = static_cast<std::int64_t>(_local.initial_window_size);
+    ++_streams_opened;
+    if (_local.max_total_streams != 0 && _streams_opened > _local.max_total_streams)
+    {
+      return connection_error(error_code_t::enhance_your_calm);
+    }
     if (_goaway_sent || active_streams() > _local.max_concurrent_streams || self_dependency)
     {
       queue_stream_reset(id, self_dependency ? error_code_t::protocol_error : error_code_t::refused_stream);
@@ -397,10 +417,10 @@ bool connection_t::finish_header_block(std::uint32_t stream_id, std::string_view
   }
   stream->headers = std::move(decoded);
   stream->headers_complete = true;
-  if (_is_streaming)
   {
     std::string method;
     std::string path;
+    std::string protocol;
     for (const hpack_header_t &header : stream->headers)
     {
       if (header.name == ":method")
@@ -411,10 +431,22 @@ bool connection_t::finish_header_block(std::uint32_t stream_id, std::string_view
       {
         path = header.value;
       }
+      else if (header.name == ":protocol")
+      {
+        protocol = header.value;
+      }
     }
     std::size_t query = path.find('?');
     std::string_view path_component = query == std::string::npos ? std::string_view(path) : std::string_view(path).substr(0, query);
-    if (_is_streaming(method_from_name(method), path_component))
+    if (method == "CONNECT")
+    {
+      stream->request_streaming = true;
+      if (_local.enable_connect_protocol && protocol == "websocket" && _is_websocket && _is_websocket(path_component))
+      {
+        stream->is_websocket = true;
+      }
+    }
+    else if (_is_streaming && _is_streaming(method_from_name(method), path_component))
     {
       stream->request_streaming = true;
     }
@@ -442,10 +474,12 @@ bool connection_t::deliver_request(stream_t &stream, std::vector<ready_request_t
   std::string path;
   std::string scheme;
   std::string authority;
+  std::string protocol;
   bool have_method = false;
   bool have_path = false;
   bool have_scheme = false;
   bool have_authority = false;
+  bool have_protocol = false;
   bool seen_regular = false;
   bool have_content_length = false;
   std::size_t content_length = 0;
@@ -498,6 +532,16 @@ bool connection_t::deliver_request(stream_t &stream, std::vector<ready_request_t
         authority = header.value;
         have_authority = true;
       }
+      else if (_local.enable_connect_protocol && header.name == ":protocol")
+      {
+        if (have_protocol)
+        {
+          queue_stream_reset(stream.id, error_code_t::protocol_error);
+          return true;
+        }
+        protocol = header.value;
+        have_protocol = true;
+      }
       else
       {
         queue_stream_reset(stream.id, error_code_t::protocol_error);
@@ -547,6 +591,17 @@ bool connection_t::deliver_request(stream_t &stream, std::vector<ready_request_t
   {
     request.headers.set("host", authority);
   }
+  if (method == "CONNECT")
+  {
+    const bool is_ws = have_protocol && protocol == "websocket" && !authority.empty() && _is_websocket && _is_websocket(request.path);
+    if (!is_ws)
+    {
+      queue_stream_reset(stream.id, error_code_t::refused_stream);
+      return true;
+    }
+    request.method = method_t::get;
+    stream.is_websocket = true;
+  }
   stream.head = method == "HEAD";
   stream.request_delivered = true;
 
@@ -556,7 +611,14 @@ bool connection_t::deliver_request(stream_t &stream, std::vector<ready_request_t
     {
       stream.content_length = content_length;
     }
-    ready.push_back(ready_request_t{stream.id, std::move(request), stream.head, true});
+    if (stream.is_websocket)
+    {
+      ready.push_back(ready_request_t{stream.id, std::move(request), false, false, true});
+    }
+    else
+    {
+      ready.push_back(ready_request_t{stream.id, std::move(request), stream.head, true});
+    }
     return true;
   }
 
@@ -852,6 +914,17 @@ void connection_t::set_inbound_waiter(std::uint32_t stream_id, std::coroutine_ha
   if (stream != nullptr)
   {
     stream->inbound_waiter = handle;
+  }
+}
+
+void connection_t::wake_inbound(std::uint32_t stream_id)
+{
+  stream_t *stream = find_stream(stream_id);
+  if (stream != nullptr && stream->inbound_waiter)
+  {
+    std::coroutine_handle<> handle = stream->inbound_waiter;
+    stream->inbound_waiter = {};
+    handle.resume();
   }
 }
 

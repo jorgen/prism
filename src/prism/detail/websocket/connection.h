@@ -11,8 +11,10 @@
 #include <string_view>
 #include <utility>
 
+#include <vio/cancellation.h>
 #include <vio/crypto.h>
 #include <vio/event_loop.h>
+#include <vio/operation/sleep.h>
 #include <vio/task.h>
 #include <vio/unique_buf.h>
 
@@ -75,6 +77,9 @@ struct ws_state_t
   bool writing = false;
   bool write_dead = false;
   bool sent_close = false;
+  bool activity = false;
+  bool awaiting_pong = false;
+  vio::cancellation_t keepalive_cancel;
 
   std::deque<ws_message_t> in_queue;
   std::coroutine_handle<> recv_waiter{};
@@ -119,6 +124,10 @@ void request_flush(std::shared_ptr<ws_state_t<Transport>> state)
       }
     }
     st->writing = false;
+    if (st->sent_close && st->out_queue.empty())
+    {
+      st->transport.finish();
+    }
   }(std::move(state));
 }
 
@@ -142,6 +151,59 @@ void queue_close_once(const std::shared_ptr<ws_state_t<Transport>> &state, std::
   }
   state->sent_close = true;
   enqueue_out(state, state->make_close(code, ""));
+}
+
+template <typename Transport>
+void begin_close(const std::shared_ptr<ws_state_t<Transport>> &state, std::uint16_t code, std::string_view reason)
+{
+  if (!state->sent_close && !state->write_dead)
+  {
+    state->sent_close = true;
+    enqueue_out(state, state->make_close(code, reason));
+  }
+  state->transport.cancel_read();
+  state->closed = true;
+  state->keepalive_cancel.cancel();
+  wake_receiver(*state);
+}
+
+template <typename Transport>
+void start_keepalive(std::shared_ptr<ws_state_t<Transport>> state)
+{
+  if (state->options.ws_ping_interval <= std::chrono::milliseconds::zero())
+  {
+    return;
+  }
+  [](std::shared_ptr<ws_state_t<Transport>> st) -> vio::detached_task_t
+  {
+    const std::chrono::milliseconds interval = st->options.ws_ping_interval;
+    while (!st->closed && !st->write_dead)
+    {
+      auto slept = co_await vio::sleep(st->loop, interval, &st->keepalive_cancel);
+      if (!slept.has_value() || st->keepalive_cancel.is_cancelled() || st->closed || st->write_dead)
+      {
+        break;
+      }
+      if (st->activity)
+      {
+        st->activity = false;
+        st->awaiting_pong = false;
+        continue;
+      }
+      if (st->awaiting_pong)
+      {
+        begin_close(st, close_code::going_away, "");
+        break;
+      }
+      if (st->sent_close)
+      {
+        break;
+      }
+      st->awaiting_pong = true;
+      enqueue_out(st, st->make_frame(opcode_t::ping, ""));
+    }
+    co_return;
+  }(std::move(state));
 }
 
 template <typename Transport>
@@ -234,6 +296,8 @@ vio::task_t<void> read_pump(std::shared_ptr<ws_state_t<Transport>> state)
     {
       break;
     }
+    state->activity = true;
+    state->awaiting_pong = false;
     if (state->reader.feed(buffer->base, buffer->len) == frame_status_t::error)
     {
       queue_close_once(state, state->reader.error_close_code());
@@ -307,17 +371,7 @@ public:
 
   void close(std::uint16_t code, std::string_view reason) override
   {
-    if (!_state->sent_close && !_state->write_dead)
-    {
-      _state->sent_close = true;
-      enqueue_out(_state, _state->make_close(code, reason));
-    }
-    if (_state->transport.reader)
-    {
-      _state->transport.reader->cancel();
-    }
-    _state->closed = true;
-    wake_receiver(*_state);
+    begin_close(_state, code, reason);
   }
 
   const request_t &request() const override
@@ -335,6 +389,7 @@ vio::task_t<void> run_websocket(Transport transport, request_t request, ws_handl
   auto state = std::make_shared<ws_state_t<Transport>>(std::move(transport), loop, options, std::move(request));
   auto connection = std::make_shared<ws_connection_impl_t<Transport>>(state);
   auto pump = read_pump(state);
+  start_keepalive(state);
   co_await handler(connection);
   connection->close(close_code::normal, "");
   co_await std::move(pump);

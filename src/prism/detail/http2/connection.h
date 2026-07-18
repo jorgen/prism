@@ -27,6 +27,8 @@ struct h2_settings_t
   std::size_t max_body_bytes = std::size_t{16} * 1024 * 1024;
   std::uint32_t max_reset_streams = 200;
   std::uint32_t max_pending_settings_ack = 8;
+  std::uint32_t max_total_streams = 10000;
+  bool enable_connect_protocol = false;
 };
 
 struct ready_request_t
@@ -34,7 +36,8 @@ struct ready_request_t
   std::uint32_t stream_id = 0;
   request_t request;
   bool head = false;
-  bool streaming = false; // delivered at END_HEADERS; body pulled via a reader
+  bool streaming = false;  // delivered at END_HEADERS; body pulled via a reader
+  bool websocket = false;
 };
 
 enum class stream_state_t : std::uint8_t
@@ -74,6 +77,7 @@ struct stream_t
   // consume-driven WINDOW_UPDATE. recv_window is our advertised per-stream
   // receive credit, replenished only as the handler consumes.
   bool request_streaming = false;
+  bool is_websocket = false;
   std::deque<std::string> inbound_chunks;
   bool inbound_ended = false;
   bool inbound_aborted = false;
@@ -86,7 +90,7 @@ struct stream_t
 class connection_t
 {
 public:
-  explicit connection_t(const h2_settings_t &local = {}, std::function<bool(method_t, std::string_view)> is_streaming = {});
+  explicit connection_t(const h2_settings_t &local = {}, std::function<bool(method_t, std::string_view)> is_streaming = {}, std::function<bool(std::string_view)> is_websocket = {});
 
   void start();
 
@@ -100,6 +104,7 @@ public:
   bool take_inbound_chunk(std::uint32_t stream_id, std::string &data_out, bool &last_out);
   void inbound_consume(std::uint32_t stream_id, std::size_t bytes);
   void set_inbound_waiter(std::uint32_t stream_id, std::coroutine_handle<> handle);
+  void wake_inbound(std::uint32_t stream_id);
   [[nodiscard]] std::optional<std::size_t> inbound_length(std::uint32_t stream_id);
   void abort_inbound(std::uint32_t stream_id, error_code_t code);
   void collect_inbound_ready(std::vector<std::coroutine_handle<>> &out);
@@ -151,6 +156,7 @@ private:
   std::string _out;
   h2_settings_t _local;
   std::function<bool(method_t, std::string_view)> _is_streaming;
+  std::function<bool(std::string_view)> _is_websocket;
 
   std::string _preface;
   bool _preface_ok = false;
