@@ -61,6 +61,48 @@ std::vector<uint8_t> as_bytes(std::string_view text)
 {
   return {reinterpret_cast<const uint8_t *>(text.data()), reinterpret_cast<const uint8_t *>(text.data()) + text.size()};
 }
+
+result_t<std::string> es256_signature_b64(const ec_key_t &key, const std::string &signing_input)
+{
+  EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+  if (ctx == nullptr)
+  {
+    return fail(status_t::internal_server_error, "acme: EVP_MD_CTX_new failed");
+  }
+  std::vector<uint8_t> der;
+  bool ok = EVP_DigestSignInit(ctx, nullptr, EVP_sha256(), nullptr, key.pkey()) == 1 && EVP_DigestSignUpdate(ctx, signing_input.data(), signing_input.size()) == 1;
+  size_t der_len = 0;
+  ok = ok && EVP_DigestSignFinal(ctx, nullptr, &der_len) == 1;
+  if (ok)
+  {
+    der.resize(der_len);
+    ok = EVP_DigestSignFinal(ctx, der.data(), &der_len) == 1;
+    der.resize(der_len);
+  }
+  EVP_MD_CTX_free(ctx);
+  if (!ok)
+  {
+    return fail(status_t::internal_server_error, "acme: ES256 signing failed");
+  }
+
+  const uint8_t *der_ptr = der.data();
+  ECDSA_SIG *sig = d2i_ECDSA_SIG(nullptr, &der_ptr, static_cast<long>(der.size()));
+  if (sig == nullptr)
+  {
+    return fail(status_t::internal_server_error, "acme: failed to decode ECDSA signature");
+  }
+  const BIGNUM *r = nullptr;
+  const BIGNUM *s = nullptr;
+  ECDSA_SIG_get0(sig, &r, &s);
+  std::array<uint8_t, 2 * coordinate_bytes> raw{};
+  const bool raw_ok = BN_bn2binpad(r, raw.data(), coordinate_bytes) == coordinate_bytes && BN_bn2binpad(s, raw.data() + coordinate_bytes, coordinate_bytes) == coordinate_bytes;
+  ECDSA_SIG_free(sig);
+  if (!raw_ok)
+  {
+    return fail(status_t::internal_server_error, "acme: failed to encode ECDSA signature");
+  }
+  return vio::crypto::base64url_encode(raw);
+}
 } // namespace
 
 ec_key_t::ec_key_t(ec_key_t &&other) noexcept
@@ -183,47 +225,54 @@ result_t<std::string> es256_jws(const ec_key_t &key, std::string_view protected_
   }
   const std::string protected_b64 = vio::crypto::base64url_encode(as_bytes(protected_json));
   const std::string payload_b64 = vio::crypto::base64url_encode(as_bytes(payload));
-  const std::string signing_input = protected_b64 + "." + payload_b64;
+  auto signature_b64 = es256_signature_b64(key, protected_b64 + "." + payload_b64);
+  if (!signature_b64)
+  {
+    return std::unexpected(signature_b64.error());
+  }
+  return std::string("{\"protected\":\"") + protected_b64 + "\",\"payload\":\"" + payload_b64 + "\",\"signature\":\"" + *signature_b64 + "\"}";
+}
 
-  EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-  if (ctx == nullptr)
+result_t<std::string> es256_compact(const ec_key_t &key, std::string_view protected_json, std::string_view payload)
+{
+  if (!key)
   {
-    return fail(status_t::internal_server_error, "acme: EVP_MD_CTX_new failed");
+    return fail(status_t::internal_server_error, "acme: signing key is empty");
   }
-  std::vector<uint8_t> der;
-  bool ok = EVP_DigestSignInit(ctx, nullptr, EVP_sha256(), nullptr, key.pkey()) == 1 && EVP_DigestSignUpdate(ctx, signing_input.data(), signing_input.size()) == 1;
-  size_t der_len = 0;
-  ok = ok && EVP_DigestSignFinal(ctx, nullptr, &der_len) == 1;
-  if (ok)
+  const std::string protected_b64 = vio::crypto::base64url_encode(as_bytes(protected_json));
+  const std::string payload_b64 = vio::crypto::base64url_encode(as_bytes(payload));
+  auto signature_b64 = es256_signature_b64(key, protected_b64 + "." + payload_b64);
+  if (!signature_b64)
   {
-    der.resize(der_len);
-    ok = EVP_DigestSignFinal(ctx, der.data(), &der_len) == 1;
-    der.resize(der_len);
+    return std::unexpected(signature_b64.error());
   }
-  EVP_MD_CTX_free(ctx);
-  if (!ok)
-  {
-    return fail(status_t::internal_server_error, "acme: ES256 signing failed");
-  }
+  return protected_b64 + "." + payload_b64 + "." + *signature_b64;
+}
 
-  const uint8_t *der_ptr = der.data();
-  ECDSA_SIG *sig = d2i_ECDSA_SIG(nullptr, &der_ptr, static_cast<long>(der.size()));
-  if (sig == nullptr)
+result_t<std::vector<std::uint8_t>> public_key_raw(const ec_key_t &key)
+{
+  if (!key)
   {
-    return fail(status_t::internal_server_error, "acme: failed to decode ECDSA signature");
+    return fail(status_t::internal_server_error, "acme: key is empty");
   }
-  const BIGNUM *r = nullptr;
-  const BIGNUM *s = nullptr;
-  ECDSA_SIG_get0(sig, &r, &s);
-  std::array<uint8_t, 2 * coordinate_bytes> raw{};
-  const bool raw_ok = BN_bn2binpad(r, raw.data(), coordinate_bytes) == coordinate_bytes && BN_bn2binpad(s, raw.data() + coordinate_bytes, coordinate_bytes) == coordinate_bytes;
-  ECDSA_SIG_free(sig);
-  if (!raw_ok)
+  EC_KEY *ec = EVP_PKEY_get0_EC_KEY(key.pkey());
+  if (ec == nullptr)
   {
-    return fail(status_t::internal_server_error, "acme: failed to encode ECDSA signature");
+    return fail(status_t::internal_server_error, "acme: key is not EC");
   }
-  const std::string signature_b64 = vio::crypto::base64url_encode(raw);
-  return std::string("{\"protected\":\"") + protected_b64 + "\",\"payload\":\"" + payload_b64 + "\",\"signature\":\"" + signature_b64 + "\"}";
+  const EC_GROUP *group = EC_KEY_get0_group(ec);
+  const EC_POINT *point = EC_KEY_get0_public_key(ec);
+  if (group == nullptr || point == nullptr)
+  {
+    return fail(status_t::internal_server_error, "acme: EC public key unavailable");
+  }
+  std::vector<std::uint8_t> out(65);
+  const size_t len = EC_POINT_point2oct(group, point, POINT_CONVERSION_UNCOMPRESSED, out.data(), out.size(), nullptr);
+  if (len != out.size())
+  {
+    return fail(status_t::internal_server_error, "acme: unexpected EC point length");
+  }
+  return out;
 }
 
 std::string http01_key_authorization(std::string_view token, std::string_view thumbprint)

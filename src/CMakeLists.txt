@@ -15,6 +15,7 @@ set(public_headers
         prism/reverse_proxy.h
         prism/server_options.h
         prism/static_files.h
+        prism/web_push.h
         prism/acme/jose.h
         prism/acme/csr.h
         prism/acme/client.h
@@ -31,6 +32,7 @@ set(sources
         prism/router.cpp
         prism/app.cpp
         prism/reverse_proxy.cpp
+        prism/web_push.cpp
         prism/static_files.cpp
         prism/version.cpp
         prism/detail/http1.cpp

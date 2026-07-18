@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <openssl/evp.h>
 
@@ -43,5 +45,7 @@ private:
 result_t<std::string> jwk_json(const ec_key_t &key);
 result_t<std::string> jwk_thumbprint(const ec_key_t &key);
 result_t<std::string> es256_jws(const ec_key_t &key, std::string_view protected_json, std::string_view payload);
+result_t<std::string> es256_compact(const ec_key_t &key, std::string_view protected_json, std::string_view payload);
+result_t<std::vector<std::uint8_t>> public_key_raw(const ec_key_t &key);
 std::string http01_key_authorization(std::string_view token, std::string_view thumbprint);
 } // namespace prism::acme
