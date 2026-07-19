@@ -1,10 +1,9 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
-#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include <vio/cancellation.h>
 #include <vio/event_loop.h>
@@ -26,6 +25,29 @@ struct message_t
 {
   std::string payload;
   int ttl_seconds = 2419200;
+};
+
+enum class delivery_t : std::uint8_t
+{
+  delivered,
+  gone,
+  rejected,
+  unavailable,
+};
+
+struct send_result_t
+{
+  delivery_t delivery = delivery_t::unavailable;
+  int status = 0;
+
+  [[nodiscard]] bool delivered() const
+  {
+    return delivery == delivery_t::delivered;
+  }
+  [[nodiscard]] bool gone() const
+  {
+    return delivery == delivery_t::gone;
+  }
 };
 
 class vapid_t
@@ -55,9 +77,6 @@ private:
   std::string _public_b64url;
 };
 
-result_t<std::vector<std::uint8_t>> encrypt(const subscription_t &sub, std::string_view payload, const acme::ec_key_t &as_key, std::span<const std::uint8_t> salt);
-
-result_t<std::string> vapid_authorization(const vapid_t &vapid, std::string_view endpoint, std::int64_t now_seconds);
-
-vio::task_t<result_t<int>> send(vio::event_loop_t &loop, const vapid_t &vapid, const subscription_t &sub, const message_t &message, vio::cancellation_t *cancel = nullptr);
+vio::task_t<send_result_t> send(vio::event_loop_t &loop, const vapid_t &vapid, const subscription_t &sub, const message_t &message, std::chrono::milliseconds timeout = std::chrono::seconds{10},
+                                vio::cancellation_t *cancel = nullptr);
 } // namespace prism::web_push

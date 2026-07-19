@@ -12,6 +12,7 @@
 #include <openssl/obj_mac.h>
 
 #include <prism/acme/jose.h>
+#include <prism/detail/web_push_crypto.h>
 #include <prism/web_push.h>
 
 #include <vio/crypto.h>
@@ -150,7 +151,7 @@ TEST_CASE("web_push: RFC 8291 aes128gcm payload round-trips through a real recip
   REQUIRE(vio::crypto::random_bytes(salt).has_value());
 
   const std::string payload = "{\"type\":\"changed\",\"listId\":\"abc-123\"}";
-  auto body = wp::encrypt(sub, payload, *as_key, salt);
+  auto body = wp::detail::encrypt(sub, payload, *as_key, salt);
   REQUIRE(body.has_value());
 
   CHECK(body->size() == 16 + 4 + 1 + 65 + (payload.size() + 1 + 16));
@@ -174,7 +175,7 @@ TEST_CASE("web_push: a different recipient cannot decrypt")
   auto as_key = prism::acme::ec_key_t::generate();
   std::array<std::uint8_t, 16> salt{};
   vio::crypto::random_bytes(salt);
-  auto body = wp::encrypt(sub, "secret", *as_key, salt);
+  auto body = wp::detail::encrypt(sub, "secret", *as_key, salt);
   REQUIRE(body.has_value());
 
   auto other = prism::acme::ec_key_t::generate();
@@ -187,7 +188,7 @@ TEST_CASE("web_push: VAPID authorization is a compact ES256 JWT with the right a
 {
   auto vapid = wp::vapid_t::generate("mailto:ops@example.com");
   REQUIRE(vapid.has_value());
-  auto authorization = wp::vapid_authorization(*vapid, "https://fcm.googleapis.com/fcm/send/xyz", 1700000000);
+  auto authorization = wp::detail::vapid_authorization(*vapid, "https://fcm.googleapis.com/fcm/send/xyz", 1700000000);
   REQUIRE(authorization.has_value());
 
   CHECK(authorization->rfind("vapid t=", 0) == 0);
@@ -212,4 +213,40 @@ TEST_CASE("web_push: VAPID authorization is a compact ES256 JWT with the right a
   CHECK(claims_json.find("\"aud\":\"https://fcm.googleapis.com\"") != std::string::npos);
   CHECK(claims_json.find("\"sub\":\"mailto:ops@example.com\"") != std::string::npos);
   CHECK(claims_json.find("\"exp\":1700043200") != std::string::npos);
+}
+
+TEST_CASE("web_push: VAPID subject is required and normalized to a URI")
+{
+  CHECK_FALSE(wp::vapid_t::generate("").has_value());
+
+  auto bare = wp::vapid_t::generate("ops@example.com");
+  REQUIRE(bare.has_value());
+  CHECK(bare->subject() == "mailto:ops@example.com");
+
+  auto already = wp::vapid_t::generate("mailto:ops@example.com");
+  REQUIRE(already.has_value());
+  CHECK(already->subject() == "mailto:ops@example.com");
+
+  auto https = wp::vapid_t::generate("https://example.com/contact");
+  REQUIRE(https.has_value());
+  CHECK(https->subject() == "https://example.com/contact");
+}
+
+TEST_CASE("web_push: send_result_t classifies delivery outcomes")
+{
+  const wp::send_result_t delivered{wp::delivery_t::delivered, 201};
+  CHECK(delivered.delivered());
+  CHECK_FALSE(delivered.gone());
+
+  const wp::send_result_t gone{wp::delivery_t::gone, 410};
+  CHECK(gone.gone());
+  CHECK_FALSE(gone.delivered());
+
+  const wp::send_result_t rejected{wp::delivery_t::rejected, 403};
+  CHECK_FALSE(rejected.delivered());
+  CHECK_FALSE(rejected.gone());
+
+  const wp::send_result_t unavailable{};
+  CHECK_FALSE(unavailable.delivered());
+  CHECK_FALSE(unavailable.gone());
 }

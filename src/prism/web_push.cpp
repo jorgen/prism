@@ -1,6 +1,7 @@
 #include "web_push.h"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -10,8 +11,12 @@
 #include <openssl/evp.h>
 #include <openssl/obj_mac.h>
 
+#include <vio/cancellation.h>
 #include <vio/crypto.h>
 #include <vio/operation/http_client.h>
+#include <vio/operation/sleep.h>
+
+#include "detail/web_push_crypto.h"
 
 namespace prism::web_push
 {
@@ -122,6 +127,41 @@ std::string origin_of(std::string_view url)
   const auto path = url.find('/', scheme + 3);
   return std::string(path == std::string_view::npos ? url : url.substr(0, path));
 }
+
+std::string normalize_subject(std::string subject)
+{
+  if (subject.starts_with("mailto:") || subject.find("://") != std::string::npos)
+  {
+    return subject;
+  }
+  if (subject.find('@') != std::string::npos)
+  {
+    return "mailto:" + subject;
+  }
+  return subject;
+}
+
+send_result_t classify(int status)
+{
+  if (status >= 200 && status < 300)
+  {
+    return {delivery_t::delivered, status};
+  }
+  if (status == 404 || status == 410)
+  {
+    return {delivery_t::gone, status};
+  }
+  if (status == 429 || status >= 500)
+  {
+    return {delivery_t::unavailable, status};
+  }
+  return {delivery_t::rejected, status};
+}
+
+delivery_t preflight_failure(status_t code)
+{
+  return code == status_t::bad_request ? delivery_t::rejected : delivery_t::unavailable;
+}
 } // namespace
 
 vapid_t::vapid_t(acme::ec_key_t key, std::string subject, std::string public_b64url)
@@ -133,6 +173,11 @@ vapid_t::vapid_t(acme::ec_key_t key, std::string subject, std::string public_b64
 
 result_t<vapid_t> vapid_t::from_pem(std::string_view private_pem, std::string subject)
 {
+  if (subject.empty())
+  {
+    return fail(status_t::bad_request, "web_push: VAPID subject must not be empty");
+  }
+  subject = normalize_subject(std::move(subject));
   auto key = acme::ec_key_t::from_pem(private_pem);
   if (!key)
   {
@@ -148,6 +193,11 @@ result_t<vapid_t> vapid_t::from_pem(std::string_view private_pem, std::string su
 
 result_t<vapid_t> vapid_t::generate(std::string subject)
 {
+  if (subject.empty())
+  {
+    return fail(status_t::bad_request, "web_push: VAPID subject must not be empty");
+  }
+  subject = normalize_subject(std::move(subject));
   auto key = acme::ec_key_t::generate();
   if (!key)
   {
@@ -166,6 +216,8 @@ result_t<std::string> vapid_t::private_pem() const
   return _key.to_pem();
 }
 
+namespace detail
+{
 result_t<std::vector<std::uint8_t>> encrypt(const subscription_t &sub, std::string_view payload, const acme::ec_key_t &as_key, std::span<const std::uint8_t> salt)
 {
   if (salt.size() != 16)
@@ -252,28 +304,29 @@ result_t<std::string> vapid_authorization(const vapid_t &vapid, std::string_view
   }
   return std::string("vapid t=") + *jwt + ", k=" + vapid.public_key_b64url();
 }
+} // namespace detail
 
-vio::task_t<result_t<int>> send(vio::event_loop_t &loop, const vapid_t &vapid, const subscription_t &sub, const message_t &message, vio::cancellation_t *cancel)
+vio::task_t<send_result_t> send(vio::event_loop_t &loop, const vapid_t &vapid, const subscription_t &sub, const message_t &message, std::chrono::milliseconds timeout, vio::cancellation_t *cancel)
 {
   auto as_key = acme::ec_key_t::generate();
   if (!as_key)
   {
-    co_return std::unexpected(as_key.error());
+    co_return send_result_t{delivery_t::unavailable, 0};
   }
   std::array<std::uint8_t, 16> salt{};
   if (!vio::crypto::random_bytes(salt))
   {
-    co_return fail(status_t::internal_server_error, "web_push: rng failed");
+    co_return send_result_t{delivery_t::unavailable, 0};
   }
-  auto body = encrypt(sub, message.payload, *as_key, salt);
+  auto body = detail::encrypt(sub, message.payload, *as_key, salt);
   if (!body)
   {
-    co_return std::unexpected(body.error());
+    co_return send_result_t{preflight_failure(body.error().code), 0};
   }
-  auto authorization = vapid_authorization(vapid, sub.endpoint, static_cast<std::int64_t>(std::time(nullptr)));
+  auto authorization = detail::vapid_authorization(vapid, sub.endpoint, static_cast<std::int64_t>(std::time(nullptr)));
   if (!authorization)
   {
-    co_return std::unexpected(authorization.error());
+    co_return send_result_t{preflight_failure(authorization.error().code), 0};
   }
 
   vio::http::request_t request;
@@ -285,11 +338,40 @@ vio::task_t<result_t<int>> send(vio::event_loop_t &loop, const vapid_t &vapid, c
   request.headers.push_back(vio::http::header_t{"Content-Type", "application/octet-stream"});
   request.body.assign(body->begin(), body->end());
 
-  auto response = co_await vio::http::fetch(loop, request, cancel);
-  if (!response)
+  vio::cancellation_t fetch_cancel;
+  vio::registration_t external;
+  if (cancel != nullptr)
   {
-    co_return fail(status_t::bad_gateway, std::string("web_push: send failed: ") + response.error().msg);
+    if (cancel->is_cancelled())
+    {
+      fetch_cancel.cancel();
+    }
+    else
+    {
+      external = cancel->register_callback([&fetch_cancel]() { fetch_cancel.cancel(); });
+    }
   }
-  co_return response->status;
+
+  if (timeout <= std::chrono::milliseconds::zero())
+  {
+    auto direct = co_await vio::http::fetch(loop, request, &fetch_cancel);
+    co_return direct ? classify(direct->status) : send_result_t{delivery_t::unavailable, 0};
+  }
+
+  vio::cancellation_t watchdog_cancel;
+  auto watchdog = [](vio::event_loop_t &wloop, std::chrono::milliseconds deadline, vio::cancellation_t &to_cancel, vio::cancellation_t &own) -> vio::task_t<void>
+  {
+    auto fired = co_await vio::sleep(wloop, deadline, &own);
+    if (fired.has_value() && !own.is_cancelled())
+    {
+      to_cancel.cancel();
+    }
+  }(loop, timeout, fetch_cancel, watchdog_cancel);
+
+  auto response = co_await vio::http::fetch(loop, request, &fetch_cancel);
+  watchdog_cancel.cancel();
+  co_await std::move(watchdog);
+
+  co_return response ? classify(response->status) : send_result_t{delivery_t::unavailable, 0};
 }
 } // namespace prism::web_push

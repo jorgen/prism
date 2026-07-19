@@ -72,6 +72,10 @@ message: hello ada
   frames on HTTP/2, with real backpressure either way.
 - **Static files** — serve a directory of built assets (an SPA, a bundle) next to
   your API with one call.
+- **Web push** — send an RFC 8291 (aes128gcm) + VAPID message to a browser
+  `PushSubscription` in one `co_await`; the send is timeout-bounded and returns a
+  classified outcome (`delivered()` / `gone()`), so pruning a dead subscription is
+  a single check.
 - **Pluggable logging** — a `std::function` sink with a level filter; stdout by
   default, swap in your framework in one line.
 - **Lean & consistent** — errors flow through `result_t<T>`
@@ -450,6 +454,57 @@ co_return (co_await app.listen(loop, "", 8080)).has_value() ? 0 : 1;
 See [`examples/reverse_proxy.cpp`](examples/reverse_proxy.cpp) — host-based
 routing configured from the command line, with HTTP and WebSocket passthrough
 wired via `install()`.
+
+## Web push
+
+Send a [Web Push](https://datatracker.ietf.org/doc/html/rfc8030) message to a
+browser's `PushSubscription` — encrypted with RFC 8291 (`aes128gcm`) and
+authorized with a VAPID (RFC 8292) ES256 JWT — from a handler or a background
+task. `prism::web_push` (`#include <prism/web_push.h>`) does the crypto, builds
+the request, and bounds it with a timeout; you bring the subscription and the
+payload.
+
+```cpp
+#include <prism/web_push.h>
+
+// Once, at startup: load your VAPID keypair. The subject must be a mailto: or
+// https: URI (a bare email is normalized to mailto:; an empty subject is an
+// error). Hand public_key_b64url() to the browser as the applicationServerKey.
+auto vapid = prism::web_push::vapid_t::from_pem(vapid_private_pem, "mailto:ops@example.com");
+if (!vapid) { /* misconfigured — push disabled */ }
+
+// Per notification: the subscription fields come straight from the browser's
+// PushSubscription (endpoint, keys.p256dh, keys.auth).
+prism::web_push::subscription_t sub{endpoint, p256dh, auth};
+prism::web_push::message_t message{R"({"title":"Ping","body":"It changed"})"};
+
+prism::web_push::send_result_t r = co_await prism::web_push::send(loop, *vapid, sub, message);
+if (r.gone())
+{
+  // 404 / 410 — the subscription expired; delete it from your store.
+}
+else if (!r.delivered())
+{
+  // r.status has the HTTP status (0 if the request never completed);
+  // r.delivery is rejected (config/data) or unavailable (transient — retry later).
+}
+```
+
+- **`send(loop, vapid, sub, message, timeout = 10s, cancel = nullptr)`** returns a
+  total `send_result_t` (not a `result_t`) — a rejection or a timeout is a delivery
+  *outcome*, not a library error, so the call site is a single branch. The request
+  is bounded by `timeout` internally (`vio::http::fetch` has no timeout of its own),
+  so you never have to hand-roll a watchdog; pass an optional `cancel` to also stop
+  it on shutdown.
+- **`send_result_t`** carries `delivery` (`delivered` / `gone` / `rejected` /
+  `unavailable`), the raw HTTP `status`, and the `delivered()` / `gone()`
+  predicates. `gone()` (404/410) is the push service telling you the subscription
+  is dead — the one case where you should delete it.
+- **`message_t`** is `{ payload, ttl_seconds = 2419200 }` (28-day default TTL, so
+  the service holds it for an offline device). **`vapid_t`** also offers
+  `generate(subject)` for a fresh keypair and `private_pem()` to persist it.
+- The low-level `encrypt()` / `vapid_authorization()` primitives live in
+  `detail/web_push_crypto.h` for tests; application code only needs `send`.
 
 ## Running the server
 
