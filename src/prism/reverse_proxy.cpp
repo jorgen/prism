@@ -103,11 +103,13 @@ vio::task_t<response_t> proxy_forward(std::shared_ptr<const table_t> table, requ
   for (const header_t &h : request.headers.entries)
   {
     if (base_hop_by_hop(h.name) || listed_in_connection(h.name, req_conn_value) || iequals(h.name, "host") || iequals(h.name, "content-length") || iequals(h.name, "user-agent") ||
-        iequals(h.name, "accept-encoding"))
+        iequals(h.name, "accept-encoding") || iequals(h.name, "x-forwarded-for"))
       continue;
     out.headers.push_back(vio::http::header_t{h.name, h.value});
   }
   out.headers.push_back(vio::http::header_t{"X-Forwarded-Proto", "https"});
+  if (!request.client_ip.empty())
+    out.headers.push_back(vio::http::header_t{"X-Forwarded-For", request.client_ip});
   if (!original_host.empty())
     out.headers.push_back(vio::http::header_t{"X-Forwarded-Host", original_host});
 
@@ -183,7 +185,7 @@ vio::task_t<void> proxy_websocket(std::shared_ptr<const table_t> table, std::sha
   for (const header_t &h : request.headers.entries)
   {
     if (base_hop_by_hop(h.name) || listed_in_connection(h.name, req_conn_value) || iequals(h.name, "host") || iequals(h.name, "sec-websocket-key") || iequals(h.name, "sec-websocket-version") ||
-        iequals(h.name, "sec-websocket-accept") || iequals(h.name, "sec-websocket-extensions"))
+        iequals(h.name, "sec-websocket-accept") || iequals(h.name, "sec-websocket-extensions") || iequals(h.name, "x-forwarded-for"))
     {
       continue;
     }
@@ -191,6 +193,10 @@ vio::task_t<void> proxy_websocket(std::shared_ptr<const table_t> table, std::sha
   }
   forwarded.push_back(header_t{"Host", backend->host});
   forwarded.push_back(header_t{"X-Forwarded-Proto", "https"});
+  if (!request.client_ip.empty())
+  {
+    forwarded.push_back(header_t{"X-Forwarded-For", request.client_ip});
+  }
   if (!host.empty())
   {
     forwarded.push_back(header_t{"X-Forwarded-Host", host});

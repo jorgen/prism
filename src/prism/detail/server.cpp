@@ -308,7 +308,7 @@ vio::task_t<bool> drain_request_body(request_codec_t &codec, Transport &transpor
 }
 
 template <typename Transport>
-vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
+vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options, std::string client_ip)
 {
   if (!transport.start_reader())
   {
@@ -421,6 +421,7 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
     {
       request_t request = codec.has_request() ? codec.take_request().request : codec.take_header_request();
       request.loop = &loop;
+      request.client_ip = client_ip;
       ws_handler_t handler = router->match_websocket(request);
       if (!handler || !websocket::is_upgrade_request(request))
       {
@@ -485,6 +486,7 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
     }
 
     request.loop = &loop;
+    request.client_ip = client_ip;
     response_t response = co_await router->dispatch(std::move(request));
 
     if (streaming && !co_await drain_request_body(codec, transport, options))
@@ -532,14 +534,16 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
 vio::task_t<void> serve_connection_tls(vio::ssl_server_client_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
-  co_await serve_connection_impl(tls_transport_t{std::move(client), loop, std::nullopt}, std::move(router), std::move(logger), options);
+  std::string client_ip = vio::ssl_server_client_peer_ip(client);
+  co_await serve_connection_impl(tls_transport_t{std::move(client), loop, std::nullopt}, std::move(router), std::move(logger), options, std::move(client_ip));
 }
 } // namespace
 
 vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
-  co_await serve_connection_impl(tcp_transport_t{std::move(client), loop, std::nullopt}, std::move(router), std::move(logger), options);
+  std::string client_ip = vio::peer_ip(client.get_tcp());
+  co_await serve_connection_impl(tcp_transport_t{std::move(client), loop, std::nullopt}, std::move(router), std::move(logger), options, std::move(client_ip));
 }
 
 namespace

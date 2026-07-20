@@ -159,6 +159,8 @@ struct request_t
 
   vio::event_loop_t *loop = nullptr;
 
+  std::string client_ip;
+
   // Set only for streaming routes (registered via app.*_stream). When present,
   // `body` is empty and the handler pulls the body through this reader.
   std::shared_ptr<request_body_t> body_reader;

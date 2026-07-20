@@ -56,12 +56,13 @@ inline h2_settings_t h2_settings_from(const server_options_t &options, const rou
 template <typename Transport>
 struct conn_ctx_t
 {
-  conn_ctx_t(Transport transport_arg, vio::event_loop_t &el, std::shared_ptr<const router_t> r, std::shared_ptr<const logger_t> l, server_options_t o)
+  conn_ctx_t(Transport transport_arg, vio::event_loop_t &el, std::shared_ptr<const router_t> r, std::shared_ptr<const logger_t> l, server_options_t o, std::string client_ip_arg)
     : transport(std::move(transport_arg))
     , loop(el)
     , router(std::move(r))
     , logger(std::move(l))
     , options(o)
+    , client_ip(std::move(client_ip_arg))
     , conn(h2_settings_from(o, *router), [routes = router](method_t method, std::string_view path) { return routes->is_streaming(method, path); }, [routes = router](std::string_view path) { return routes->resolve(method_t::get, path).websocket; })
   {
   }
@@ -71,6 +72,7 @@ struct conn_ctx_t
   std::shared_ptr<const router_t> router;
   std::shared_ptr<const logger_t> logger;
   server_options_t options;
+  std::string client_ip;
   connection_t conn;
   bool writing = false;
   bool write_dead = false;
@@ -375,6 +377,7 @@ void spawn_handler(std::shared_ptr<conn_ctx_t<Transport>> state, ready_request_t
   [](std::shared_ptr<conn_ctx_t<Transport>> ctx, ready_request_t ready) -> vio::detached_task_t
   {
     ready.request.loop = &ctx->loop;
+    ready.request.client_ip = ctx->client_ip;
     std::uint32_t stream_id = ready.stream_id;
     bool head = ready.head;
     bool streaming = ready.streaming;
@@ -555,16 +558,18 @@ vio::task_t<void> run_connection(std::shared_ptr<conn_ctx_t<Transport>> ctx)
 vio::task_t<void> serve_connection_h2(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
+  std::string client_ip = vio::peer_ip(client.get_tcp());
   tcp_transport_t transport{std::move(client), loop, std::nullopt};
-  auto ctx = std::make_shared<conn_ctx_t<tcp_transport_t>>(std::move(transport), loop, std::move(router), std::move(logger), options);
+  auto ctx = std::make_shared<conn_ctx_t<tcp_transport_t>>(std::move(transport), loop, std::move(router), std::move(logger), options, std::move(client_ip));
   co_await run_connection(ctx);
 }
 
 vio::task_t<void> serve_connection_h2_tls(vio::ssl_server_client_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
+  std::string client_ip = vio::ssl_server_client_peer_ip(client);
   tls_transport_t transport{std::move(client), loop, std::nullopt};
-  auto ctx = std::make_shared<conn_ctx_t<tls_transport_t>>(std::move(transport), loop, std::move(router), std::move(logger), options);
+  auto ctx = std::make_shared<conn_ctx_t<tls_transport_t>>(std::move(transport), loop, std::move(router), std::move(logger), options, std::move(client_ip));
   co_await run_connection(ctx);
 }
 } // namespace prism::detail::http2
