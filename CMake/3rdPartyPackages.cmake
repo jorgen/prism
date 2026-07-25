@@ -4,9 +4,9 @@
 # a pre-built copy via find_package instead of fetching). The PRISM_ prefix is derived
 # from the project() name (PROJECT_NAME).
 
-CmDepFetchPackage(vio 5338286
-    https://github.com/jorgen/vio/archive/5338286248642532fcd62d7018e880ce58d7195f.tar.gz
-    SHA256=28f6eab15218b317076d7ad593352c9829b4b73787b80e6eae108458710ade01)
+CmDepFetchPackage(vio 7a8425a
+    https://github.com/jorgen/vio/archive/7a8425ab7341b0685abddb833c57cbacf1735470.tar.gz
+    SHA256=193140b975bf519a3be1de27a30c34884e0c1ce046b1f3e20a51ca09b7a150aa)
 
 CmDepFetchPackage(structify b8fec28d24
     https://github.com/jorgen/structify/archive/b8fec28d2449640e4c5668a59c736555e50aee81.tar.gz
