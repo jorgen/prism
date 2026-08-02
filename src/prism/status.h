@@ -16,6 +16,7 @@ enum class status_t : uint16_t
   moved_permanently = 301,
   found = 302,
   not_modified = 304,
+  permanent_redirect = 308,
   bad_request = 400,
   unauthorized = 401,
   forbidden = 403,
@@ -53,6 +54,8 @@ constexpr std::string_view reason_phrase(status_t s)
     return "Found";
   case status_t::not_modified:
     return "Not Modified";
+  case status_t::permanent_redirect:
+    return "Permanent Redirect";
   case status_t::bad_request:
     return "Bad Request";
   case status_t::unauthorized:

@@ -12,6 +12,7 @@ set(public_headers
         prism/router.h
         prism/app.h
         prism/websocket.h
+        prism/host_redirect.h
         prism/reverse_proxy.h
         prism/server_options.h
         prism/static_files.h
@@ -31,6 +32,7 @@ set(sources
         prism/logging.cpp
         prism/router.cpp
         prism/app.cpp
+        prism/host_redirect.cpp
         prism/reverse_proxy.cpp
         prism/web_push.cpp
         prism/static_files.cpp
