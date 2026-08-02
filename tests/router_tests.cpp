@@ -113,3 +113,60 @@ TEST_CASE("router captures a trailing wildcard segment")
     });
   CHECK(rc == 0);
 }
+
+TEST_CASE("HEAD falls back to the GET route; an explicit HEAD route wins")
+{
+  int rc = vio::run(
+    [](vio::event_loop_t &) -> vio::task_t<int>
+    {
+      prism::app_t app;
+      app.get("/asset",
+              [](prism::request_t) -> vio::task_t<prism::response_t>
+              {
+                co_return prism::response_t::text(prism::status_t::ok, "get-body");
+              });
+      app.get("/both",
+              [](prism::request_t) -> vio::task_t<prism::response_t>
+              {
+                co_return prism::response_t::text(prism::status_t::ok, "get");
+              });
+      app.head("/both",
+               [](prism::request_t) -> vio::task_t<prism::response_t>
+               {
+                 prism::response_t response;
+                 response.status = prism::status_t::no_content;
+                 co_return response;
+               });
+      app.post("/write",
+               [](prism::request_t) -> vio::task_t<prism::response_t>
+               {
+                 co_return prism::response_t::text(prism::status_t::ok, "posted");
+               });
+
+      // No HEAD route: the GET handler answers; the transport strips the body at
+      // serialization (serialize_response keeps Content-Length of the full body).
+      prism::request_t head;
+      head.method = prism::method_t::head;
+      head.path = "/asset";
+      prism::response_t res = co_await app.handle(std::move(head));
+      CHECK(res.status == prism::status_t::ok);
+      CHECK(res.body == "get-body");
+
+      // An explicitly registered HEAD route takes precedence over the fallback.
+      prism::request_t head_both;
+      head_both.method = prism::method_t::head;
+      head_both.path = "/both";
+      prism::response_t res_both = co_await app.handle(std::move(head_both));
+      CHECK(res_both.status == prism::status_t::no_content);
+
+      // The fallback is HEAD->GET only: other methods still 405.
+      prism::request_t head_write;
+      head_write.method = prism::method_t::head;
+      head_write.path = "/write";
+      prism::response_t res_write = co_await app.handle(std::move(head_write));
+      CHECK(res_write.status == prism::status_t::method_not_allowed);
+
+      co_return 0;
+    });
+  CHECK(rc == 0);
+}

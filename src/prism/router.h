@@ -136,6 +136,9 @@ private:
   // fixed-segment count on success (and whether a trailing wildcard applies), or
   // std::nullopt when the path shape does not match.
   [[nodiscard]] static bool segments_match(const route_t &route, const std::vector<std::string_view> &path_segments);
+  // True when a non-websocket route with this exact method matches the path (dispatch/resolve use it
+  // to decide whether a HEAD request falls back to the GET route).
+  [[nodiscard]] bool has_route(method_t method, const std::vector<std::string_view> &path_segments) const;
 
   std::vector<route_t> _routes;
   std::shared_ptr<detail::per_thread_registry_t> _factories = std::make_shared<detail::per_thread_registry_t>();

@@ -96,10 +96,24 @@ bool router_t::segments_match(const route_t &route, const std::vector<std::strin
   return true;
 }
 
+bool router_t::has_route(method_t method, const std::vector<std::string_view> &path_segments) const
+{
+  for (const auto &route : _routes)
+  {
+    if (!route.websocket && route.method == method && segments_match(route, path_segments))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 router_t::route_match_t router_t::resolve(method_t method, std::string_view path) const
 {
   std::vector<std::string_view> path_segments = split_segments(path);
   route_match_t result;
+  // Mirror dispatch: a HEAD request with no explicit HEAD route resolves through the GET route.
+  const bool head_falls_back_to_get = method == method_t::head && !has_route(method_t::head, path_segments);
   for (const auto &route : _routes)
   {
     if (!segments_match(route, path_segments))
@@ -107,7 +121,7 @@ router_t::route_match_t router_t::resolve(method_t method, std::string_view path
       continue;
     }
     result.path_matched = true;
-    if (route.method == method)
+    if (route.method == method || (!route.websocket && head_falls_back_to_get && route.method == method_t::get))
     {
       result.method_allowed = true;
       result.streaming = route.streaming;
@@ -181,6 +195,10 @@ vio::task_t<response_t> router_t::dispatch(request_t request) const
   std::vector<std::string_view> path_segments = split_segments(request.path);
   bool path_matched = false;
 
+  // RFC 9110: HEAD must be supported wherever GET is. An explicitly registered HEAD route wins;
+  // otherwise a HEAD request runs the matching GET handler and the transport layer omits the body
+  // (serialize_response / the h2 stream already write Content-Length from the full body).
+  const bool head_falls_back_to_get = request.method == method_t::head && !has_route(method_t::head, path_segments);
   for (const auto &route : _routes)
   {
     if (route.websocket || !segments_match(route, path_segments))
@@ -192,7 +210,7 @@ vio::task_t<response_t> router_t::dispatch(request_t request) const
     const size_t fixed = has_wildcard ? route.segments.size() - 1 : route.segments.size();
 
     path_matched = true;
-    if (route.method != request.method)
+    if (route.method != request.method && !(head_falls_back_to_get && route.method == method_t::get))
     {
       continue;
     }
