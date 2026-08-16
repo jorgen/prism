@@ -108,6 +108,32 @@ std::uint32_t effective_worker_count(std::uint32_t requested)
   std::uint32_t hardware = std::thread::hardware_concurrency();
   return hardware == 0 ? 1 : hardware;
 }
+
+bool reuseport_supported(vio::event_loop_t &loop)
+{
+  auto probe = vio::tcp_create_server(loop);
+  if (!probe.has_value())
+  {
+    return false;
+  }
+  auto addr = vio::ip4_addr("127.0.0.1", 0);
+  if (!addr.has_value())
+  {
+    return false;
+  }
+  return vio::tcp_bind(probe.value(), reinterpret_cast<const sockaddr *>(&addr.value()), static_cast<unsigned int>(UV_TCP_REUSEPORT)).has_value();
+}
+
+std::uint32_t usable_worker_count(vio::event_loop_t &loop, std::uint32_t requested, logger_t &logger)
+{
+  const std::uint32_t workers = effective_worker_count(requested);
+  if (workers <= 1 || reuseport_supported(loop))
+  {
+    return workers;
+  }
+  logger.log(log_level_t::warn, "SO_REUSEPORT is unavailable on this platform (libuv supports it on Linux, FreeBSD 12+, DragonFly, Solaris 11.4 and AIX 7.3); serving on one worker thread instead of " + std::to_string(workers));
+  return 1;
+}
 } // namespace
 
 void app_t::static_files(std::string_view url_prefix, std::string root, bool spa_fallback)
@@ -132,7 +158,7 @@ vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_v
     co_return fail(status_t::internal_server_error, "route configuration error: " + _route_errors.front());
   }
 
-  const std::uint32_t workers = effective_worker_count(options.worker_threads);
+  const std::uint32_t workers = usable_worker_count(loop, options.worker_threads, *_logger);
   const bool reuseport = workers > 1;
 
   auto bound = resolve_and_bind(loop, host, port, reuseport, *_logger);
@@ -222,7 +248,7 @@ vio::task_t<result_t<void>> app_t::listen_tls(vio::event_loop_t &loop, std::stri
     config.alpn_protocols = {"h2", "http/1.1"};
   }
 
-  const std::uint32_t workers = effective_worker_count(options.worker_threads);
+  const std::uint32_t workers = usable_worker_count(loop, options.worker_threads, *_logger);
   const bool reuseport = workers > 1;
 
   auto bound = resolve_and_bind(loop, host, port, reuseport, *_logger);
