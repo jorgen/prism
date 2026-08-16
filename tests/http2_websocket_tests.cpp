@@ -460,7 +460,7 @@ vio::task_t<bool> run_h2_settings_probe(vio::event_loop_t &loop, bool with_ws)
   cancel.cancel();
   auto serve_result = co_await std::move(server_task);
   CHECK(serve_result.has_value());
-  co_return advertised;
+  co_return std::move(advertised);
 }
 
 struct h2_reset_t

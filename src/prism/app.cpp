@@ -174,7 +174,7 @@ vio::task_t<result_t<void>> app_t::listen(vio::event_loop_t &loop, std::string_v
                                }
                                [](vio::tcp_server_t bound_server, std::shared_ptr<const router_t> routes_ref, std::shared_ptr<logger_t> logger_ref, vio::cancellation_t *worker_cancel_ref, server_options_t options_ref, std::latch *drained_ref) -> vio::detached_task_t
                                {
-                                 co_await prism::detail::serve(std::move(bound_server), std::move(routes_ref), std::move(logger_ref), worker_cancel_ref, options_ref);
+                                 (void)co_await prism::detail::serve(std::move(bound_server), std::move(routes_ref), std::move(logger_ref), worker_cancel_ref, options_ref);
                                  drained_ref->count_down();
                                }(std::move(server.value()), routes, logger, worker_cancel, options, &drained);
                              });
@@ -278,7 +278,7 @@ vio::task_t<result_t<void>> app_t::listen_tls(vio::event_loop_t &loop, std::stri
                                }
                                [](vio::ssl_server_t tls_server_ref, std::shared_ptr<const router_t> routes_ref, std::shared_ptr<logger_t> logger_ref, vio::cancellation_t *worker_cancel_ref, server_options_t options_ref, std::latch *drained_ref) -> vio::detached_task_t
                                {
-                                 co_await prism::detail::serve_tls(std::move(tls_server_ref), std::move(routes_ref), std::move(logger_ref), worker_cancel_ref, options_ref);
+                                 (void)co_await prism::detail::serve_tls(std::move(tls_server_ref), std::move(routes_ref), std::move(logger_ref), worker_cancel_ref, options_ref);
                                  drained_ref->count_down();
                                }(std::move(tls.value()), routes, logger, worker_cancel, options, &drained);
                              });

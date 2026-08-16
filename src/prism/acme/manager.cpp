@@ -271,7 +271,7 @@ vio::task_t<void> manager_t::run_renewal_loop(std::shared_ptr<vio::sni_cert_stor
   const auto backoff = std::chrono::duration_cast<std::chrono::milliseconds>(_config.renewal_backoff);
   while (cancel == nullptr || !cancel->is_cancelled())
   {
-    co_await vio::sleep(_loop, interval, cancel);
+    (void)co_await vio::sleep(_loop, interval, cancel);
     if (cancel != nullptr && cancel->is_cancelled())
     {
       break;
@@ -282,7 +282,7 @@ vio::task_t<void> manager_t::run_renewal_loop(std::shared_ptr<vio::sni_cert_stor
       if (!processed)
       {
         note(std::string("acme: renewal failed for ") + domain + ": " + processed.error().msg);
-        co_await vio::sleep(_loop, backoff, cancel);
+        (void)co_await vio::sleep(_loop, backoff, cancel);
       }
     }
   }

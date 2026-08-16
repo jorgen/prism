@@ -372,7 +372,7 @@ vio::task_t<result_t<issued_cert_t>> client_t::obtain_certificate(std::vector<st
         outcome = fail(status_t::bad_gateway, "acme: authorization for " + authorization->identifier.value + " is invalid");
         break;
       }
-      co_await vio::sleep(_loop, _config.poll_interval, cancel);
+      (void)co_await vio::sleep(_loop, _config.poll_interval, cancel);
     }
 
     cleanup(token);
@@ -424,7 +424,7 @@ vio::task_t<result_t<issued_cert_t>> client_t::obtain_certificate(std::vector<st
     {
       co_return fail(status_t::bad_gateway, "acme: order became invalid");
     }
-    co_await vio::sleep(_loop, _config.poll_interval, cancel);
+    (void)co_await vio::sleep(_loop, _config.poll_interval, cancel);
   }
   if (certificate_url.empty())
   {

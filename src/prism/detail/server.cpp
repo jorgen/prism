@@ -558,7 +558,7 @@ vio::task_t<void> drain_active(vio::event_loop_t &loop, std::shared_ptr<std::siz
   std::chrono::milliseconds waited{0};
   while (*active > 0 && waited < budget)
   {
-    co_await vio::sleep(loop, step, nullptr);
+    (void)co_await vio::sleep(loop, step, nullptr);
     waited += step;
   }
   if (*active > 0)
