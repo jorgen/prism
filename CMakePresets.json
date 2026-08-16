@@ -22,7 +22,7 @@
       "name": "debug-msvc",
       "displayName": "Debug (MSVC, Windows)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/cmake-build-debug",
+      "binaryDir": "${sourceDir}/cmake-build-msvc",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
