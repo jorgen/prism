@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="prism — requests, resolved." width="720">
+</p>
+
 # prism
 
 [![CI](https://github.com/jorgen/prism/actions/workflows/ci.yml/badge.svg)](https://github.com/jorgen/prism/actions/workflows/ci.yml)
