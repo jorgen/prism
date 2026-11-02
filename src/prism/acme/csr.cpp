@@ -13,13 +13,24 @@ namespace prism::acme
 {
 namespace
 {
-int64_t tm_to_unix(const struct tm &value)
+// notAfter as Unix time. BoringSSL (vio's default backend) converts directly and has no
+// ASN1_TIME_to_tm; OpenSSL and LibreSSL go through struct tm.
+bool asn1_time_to_unix(const ASN1_TIME *value, int64_t &out)
 {
-  struct tm copy = value;
-#if defined(_WIN32)
-  return static_cast<int64_t>(_mkgmtime(&copy));
+#if defined(OPENSSL_IS_BORINGSSL)
+  return ASN1_TIME_to_posix(value, &out) == 1;
 #else
-  return static_cast<int64_t>(timegm(&copy));
+  struct tm parsed = {};
+  if (ASN1_TIME_to_tm(value, &parsed) != 1)
+  {
+    return false;
+  }
+#if defined(_WIN32)
+  out = static_cast<int64_t>(_mkgmtime(&parsed));
+#else
+  out = static_cast<int64_t>(timegm(&parsed));
+#endif
+  return true;
 #endif
 }
 } // namespace
@@ -119,13 +130,8 @@ result_t<int64_t> cert_not_after_unix(std::string_view fullchain_pem)
     return fail(status_t::internal_server_error, "acme: no certificate in PEM");
   }
   const ASN1_TIME *not_after = X509_get0_notAfter(leaf);
-  struct tm parsed = {};
-  const bool ok = not_after != nullptr && ASN1_TIME_to_tm(not_after, &parsed) == 1;
   int64_t unix_time = 0;
-  if (ok)
-  {
-    unix_time = tm_to_unix(parsed);
-  }
+  const bool ok = not_after != nullptr && asn1_time_to_unix(not_after, unix_time);
   X509_free(leaf);
   if (!ok)
   {

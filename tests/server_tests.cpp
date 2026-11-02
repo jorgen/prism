@@ -63,7 +63,7 @@ vio::task_t<void> run_client(vio::event_loop_t &loop, int port, std::string requ
       break;
     }
     auto &buffer = read.value();
-    response.append(buffer->base, buffer->len);
+    response.append(reinterpret_cast<const char *>(buffer.data()), buffer.size());
   }
 }
 
@@ -107,7 +107,7 @@ vio::task_t<void> run_client6(vio::event_loop_t &loop, int port, std::string req
       break;
     }
     auto &buffer = read.value();
-    response.append(buffer->base, buffer->len);
+    response.append(reinterpret_cast<const char *>(buffer.data()), buffer.size());
   }
 }
 
@@ -211,7 +211,7 @@ vio::task_t<bool> hold_then_close(vio::event_loop_t &loop, int port, std::chrono
       break;
     }
     auto &buffer = read.value();
-    response.append(buffer->base, buffer->len);
+    response.append(reinterpret_cast<const char *>(buffer.data()), buffer.size());
   }
   token.cancel();
   co_await std::move(watchdog);
@@ -268,7 +268,7 @@ vio::task_t<probe_result_t> probe_client(vio::event_loop_t &loop, int port, std:
       break;
     }
     auto &buffer = read.value();
-    result.response.append(buffer->base, buffer->len);
+    result.response.append(reinterpret_cast<const char *>(buffer.data()), buffer.size());
   }
   co_return result;
 }
@@ -531,7 +531,7 @@ TEST_CASE("vio::write_tcp takes ownership of a moved std::vector on the cancella
           {
             break;
           }
-          out->append(read.value()->base, read.value()->len);
+          out->append(reinterpret_cast<const char *>(read.value().data()), read.value().size());
         }
       }(std::move(server.value()), received);
 

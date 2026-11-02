@@ -45,7 +45,7 @@ vio::task_t<read_outcome_t> read_with_timeout(vio::event_loop_t &loop, Reader &r
       out = std::move(untimed.value());
       co_return read_outcome_t::data;
     }
-    co_return untimed.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error;
+    co_return untimed.error().code == vio::errc::eof ? read_outcome_t::eof : read_outcome_t::error;
   }
 
   vio::cancellation_t token;
@@ -71,7 +71,7 @@ vio::task_t<read_outcome_t> read_with_timeout(vio::event_loop_t &loop, Reader &r
   {
     co_return read_outcome_t::timed_out;
   }
-  co_return read.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error;
+  co_return read.error().code == vio::errc::eof ? read_outcome_t::eof : read_outcome_t::error;
 }
 
 struct read_into_result_t
@@ -81,7 +81,7 @@ struct read_into_result_t
 };
 
 // Zero-copy scatter read into the caller's buffer with a timeout watchdog. Only
-// the plain-TCP reader exposes read_into (libuv lands bytes straight into dst);
+// the plain-TCP reader exposes read_into (vio lands bytes straight into dst);
 // on timeout the watchdog cancels the reader (fatal, connection closes).
 inline vio::task_t<read_into_result_t> tcp_read_into_with_timeout(vio::event_loop_t &loop, vio::tcp_reader_t &reader, std::span<std::byte> dst, std::chrono::milliseconds timeout)
 {
@@ -92,7 +92,7 @@ inline vio::task_t<read_into_result_t> tcp_read_into_with_timeout(vio::event_loo
     {
       co_return read_into_result_t{r.value(), r.value() == 0 ? read_outcome_t::eof : read_outcome_t::data};
     }
-    co_return read_into_result_t{0, r.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error};
+    co_return read_into_result_t{0, r.error().code == vio::errc::eof ? read_outcome_t::eof : read_outcome_t::error};
   }
 
   vio::cancellation_t token;
@@ -117,7 +117,7 @@ inline vio::task_t<read_into_result_t> tcp_read_into_with_timeout(vio::event_loo
   {
     co_return read_into_result_t{0, read_outcome_t::timed_out};
   }
-  co_return read_into_result_t{0, r.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error};
+  co_return read_into_result_t{0, r.error().code == vio::errc::eof ? read_outcome_t::eof : read_outcome_t::error};
 }
 
 // TLS scatter read: SSL_read decrypts directly into the caller's buffer (no vio
@@ -127,9 +127,7 @@ inline vio::task_t<read_into_result_t> tcp_read_into_with_timeout(vio::event_loo
 // remaining body so it never over-reads past the message.
 inline vio::task_t<read_into_result_t> tls_read_into_with_timeout(vio::event_loop_t &loop, vio::tls_server_client_reader_t &reader, std::span<std::byte> dst, std::chrono::milliseconds timeout)
 {
-  uv_buf_t buf;
-  buf.base = reinterpret_cast<char *>(dst.data());
-  buf.len = static_cast<decltype(buf.len)>(dst.size());
+  std::span<std::byte> buf = dst;
 
   if (timeout <= std::chrono::milliseconds::zero())
   {
@@ -138,7 +136,7 @@ inline vio::task_t<read_into_result_t> tls_read_into_with_timeout(vio::event_loo
     {
       co_return read_into_result_t{dst.size(), read_outcome_t::data};
     }
-    co_return read_into_result_t{0, r.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error};
+    co_return read_into_result_t{0, r.error().code == vio::errc::eof ? read_outcome_t::eof : read_outcome_t::error};
   }
 
   vio::cancellation_t token;
@@ -163,7 +161,7 @@ inline vio::task_t<read_into_result_t> tls_read_into_with_timeout(vio::event_loo
   {
     co_return read_into_result_t{0, read_outcome_t::timed_out};
   }
-  co_return read_into_result_t{0, r.error().code == UV_EOF ? read_outcome_t::eof : read_outcome_t::error};
+  co_return read_into_result_t{0, r.error().code == vio::errc::eof ? read_outcome_t::eof : read_outcome_t::error};
 }
 
 inline vio::task_t<write_outcome_t> write_tcp_with_timeout(vio::event_loop_t &loop, vio::tcp_t &client, std::string wire, std::chrono::milliseconds timeout)
@@ -202,9 +200,7 @@ inline vio::task_t<write_outcome_t> write_tcp_with_timeout(vio::event_loop_t &lo
 
 inline vio::task_t<write_outcome_t> write_tls_bytes(vio::event_loop_t &loop, vio::ssl_server_client_t &client, std::string wire, std::chrono::milliseconds timeout)
 {
-  uv_buf_t buffer;
-  buffer.base = wire.data();
-  buffer.len = static_cast<decltype(buffer.len)>(wire.size());
+  const std::span<const std::byte> buffer = std::as_bytes(std::span<const char>(wire));
 
   if (timeout <= std::chrono::milliseconds::zero())
   {
@@ -304,7 +300,7 @@ struct tcp_transport_t
 
 struct tls_transport_t
 {
-  // TLS can't be zero-copy (libuv only sees ciphertext), but read_into still
+  // TLS can't be zero-copy (the socket only sees ciphertext), but read_into still
   // decrypts SSL_read output straight into the caller buffer -- the fewest copies
   // TLS allows. vio's TLS reader self-bounds via its internal ring buffer, so no
   // manual pause/resume is needed.

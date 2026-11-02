@@ -289,12 +289,9 @@ struct h2_stream_transport_t
         request_flush(ctx);
         if (!data.empty())
         {
-          char *base = new char[data.size()];
+          auto *base = new std::byte[data.size()];
           std::memcpy(base, data.data(), data.size());
-          uv_buf_t buf;
-          buf.base = base;
-          buf.len = static_cast<decltype(buf.len)>(data.size());
-          out = vio::unique_buf_t{buf, vio::default_dealloc, nullptr};
+          out = vio::unique_buf_t{std::span<std::byte>(base, data.size()), vio::default_dealloc, nullptr};
           co_return read_outcome_t::data;
         }
         if (last)
@@ -509,7 +506,7 @@ vio::task_t<void> run_connection(std::shared_ptr<conn_ctx_t<Transport>> ctx)
     }
 
     std::vector<ready_request_t> ready;
-    bool ok = ctx->conn.receive(std::string_view(buffer->base, buffer->len), ready);
+    bool ok = ctx->conn.receive(std::string_view(reinterpret_cast<const char *>(buffer.data()), buffer.size()), ready);
     for (ready_request_t &request : ready)
     {
       spawn_handler(ctx, std::move(request));
@@ -558,7 +555,7 @@ vio::task_t<void> run_connection(std::shared_ptr<conn_ctx_t<Transport>> ctx)
 vio::task_t<void> serve_connection_h2(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
-  std::string client_ip = vio::peer_ip(client.get_tcp());
+  std::string client_ip = vio::peer_ip(client);
   tcp_transport_t transport{std::move(client), loop, std::nullopt};
   auto ctx = std::make_shared<conn_ctx_t<tcp_transport_t>>(std::move(transport), loop, std::move(router), std::move(logger), options, std::move(client_ip));
   co_await run_connection(ctx);

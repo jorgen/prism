@@ -66,7 +66,7 @@ vio::task_t<void> backend_serve(vio::tcp_server_t server, std::string &captured)
     auto chunk = co_await reader;
     if (!chunk.has_value())
       break;
-    captured.append(chunk.value().buf.base, chunk.value().buf.len);
+    captured.append(reinterpret_cast<const char *>(chunk.value().data()), chunk.value().size());
   }
 
   const std::string method = captured.substr(0, captured.find(' '));

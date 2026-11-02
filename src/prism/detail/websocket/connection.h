@@ -298,7 +298,7 @@ vio::task_t<void> read_pump(std::shared_ptr<ws_state_t<Transport>> state)
     }
     state->activity = true;
     state->awaiting_pong = false;
-    if (state->reader.feed(buffer->base, buffer->len) == frame_status_t::error)
+    if (state->reader.feed(reinterpret_cast<const char *>(buffer.data()), buffer.size()) == frame_status_t::error)
     {
       queue_close_once(state, state->reader.error_close_code());
       break;

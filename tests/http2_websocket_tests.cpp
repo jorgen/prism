@@ -144,7 +144,7 @@ vio::task_t<h2ws_result_t> run_h2_ws(vio::event_loop_t &loop)
     {
       break;
     }
-    frames.feed(read.value()->base, read.value()->len);
+    frames.feed(reinterpret_cast<const char *>(read.value().data()), read.value().size());
     while (frames.has_frame())
     {
       frame_t frame = frames.take_frame();
@@ -303,7 +303,7 @@ vio::task_t<h2ws_reject_t> run_h2_ws_unmasked(vio::event_loop_t &loop)
     {
       break;
     }
-    frames.feed(read.value()->base, read.value()->len);
+    frames.feed(reinterpret_cast<const char *>(read.value().data()), read.value().size());
     while (frames.has_frame())
     {
       frame_t frame = frames.take_frame();
@@ -433,7 +433,7 @@ vio::task_t<bool> run_h2_settings_probe(vio::event_loop_t &loop, bool with_ws)
     {
       break;
     }
-    frames.feed(read.value()->base, read.value()->len);
+    frames.feed(reinterpret_cast<const char *>(read.value().data()), read.value().size());
     while (frames.has_frame())
     {
       frame_t frame = frames.take_frame();
@@ -528,7 +528,7 @@ vio::task_t<h2_reset_t> run_h2_connect_unmatched(vio::event_loop_t &loop, std::s
     {
       break;
     }
-    frames.feed(read.value()->base, read.value()->len);
+    frames.feed(reinterpret_cast<const char *>(read.value().data()), read.value().size());
     while (frames.has_frame())
     {
       frame_t frame = frames.take_frame();

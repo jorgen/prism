@@ -130,7 +130,7 @@ vio::task_t<std::map<std::uint32_t, h2_response_t>> h2_exchange(vio::event_loop_
     {
       break;
     }
-    frames.feed(read.value()->base, read.value()->len);
+    frames.feed(reinterpret_cast<const char *>(read.value().data()), read.value().size());
     while (frames.has_frame())
     {
       frame_t frame = frames.take_frame();

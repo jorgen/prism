@@ -57,7 +57,7 @@ vio::task_t<void> send_and_read(vio::event_loop_t &loop, int port, std::string r
     {
       break;
     }
-    response.append(read.value()->base, read.value()->len);
+    response.append(reinterpret_cast<const char *>(read.value().data()), read.value().size());
   }
 }
 

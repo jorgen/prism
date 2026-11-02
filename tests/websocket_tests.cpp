@@ -157,7 +157,7 @@ vio::task_t<ws_exchange_t> run_ws_client(vio::event_loop_t &loop, int port, std:
     {
       co_return false;
     }
-    buffer.append(read.value()->base, read.value()->len);
+    buffer.append(reinterpret_cast<const char *>(read.value().data()), read.value().size());
     co_return true;
   };
 
@@ -399,7 +399,7 @@ vio::task_t<ws_keepalive_t> run_ws_silent_client(vio::event_loop_t &loop, int po
       co_await std::move(watchdog);
       co_return result;
     }
-    buffer.append(read.value()->base, read.value()->len);
+    buffer.append(reinterpret_cast<const char *>(read.value().data()), read.value().size());
   }
   buffer.erase(0, buffer.find("\r\n\r\n") + 4);
 
@@ -442,7 +442,7 @@ vio::task_t<ws_keepalive_t> run_ws_silent_client(vio::event_loop_t &loop, int po
       result.ended = true;
       break;
     }
-    buffer.append(read.value()->base, read.value()->len);
+    buffer.append(reinterpret_cast<const char *>(read.value().data()), read.value().size());
   }
 
   token.cancel();

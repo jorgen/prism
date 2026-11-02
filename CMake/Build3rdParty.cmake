@@ -10,21 +10,20 @@ macro(Build3rdParty)
     string(REPLACE "/GR-" "/GR" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     string(REPLACE "-D_HAS_EXCEPTIONS=0" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
-    # vio: async I/O runtime (libuv + LibreSSL + coroutines). Built static (with
-    # its src/ dir re-exposed as a PUBLIC include, since vio marks headers PRIVATE
-    # upstream), or consumed pre-built via find_package when PRISM_USE_SYSTEM_VIO is set.
-    # SKIP_IF_TARGET lets a parent project that already added vio (e.g. photon
-    # consuming prism) win, so vio is add_subdirectory'd exactly once.
-    CmDepAddPackage(vio CONFIG PUBLIC_INCLUDE src SKIP_IF_TARGET vio
-        OPTIONS VIO_BUILD_TESTS=OFF VIO_BUILD_EXAMPLES=OFF VIO_BUILD_SHARED=OFF VIO_INSTALL=OFF)
+    # vio: async I/O runtime (its own event loop + BoringSSL + coroutines). Built
+    # static (with its src/ dir re-exposed as a PUBLIC include, since vio marks
+    # headers PRIVATE upstream), or consumed pre-built via find_package when
+    # PRISM_USE_SYSTEM_VIO is set. cmake-dep adds each package once per build, so a
+    # parent that already added vio (e.g. photon consuming prism) wins.
+    CmDepAddPackage(vio CONFIG PUBLIC_INCLUDE src
+        OPTIONS VIO_BUILD_TESTS=OFF VIO_BUILD_EXAMPLES=OFF VIO_BUILD_GUI=OFF VIO_BUILD_SHARED=OFF VIO_INSTALL=OFF)
 
     # structify: header-only JSON<->struct. Provides structify::structify.
-    CmDepAddPackage(structify CONFIG SKIP_IF_TARGET structify)
+    CmDepAddPackage(structify CONFIG)
 
-    # doctest: testing framework. Only needed for the test build. vio (when
-    # bundled) may already create the `doctest` target, so guard on it.
+    # doctest: testing framework. Only needed for the test build.
     if (PRISM_BUILD_TESTS)
-        CmDepAddPackage(doctest CONFIG SKIP_IF_TARGET doctest OPTIONS DOCTEST_WITH_TESTS=OFF)
+        CmDepAddPackage(doctest CONFIG OPTIONS DOCTEST_WITH_TESTS=OFF)
     endif ()
 
     # llhttp: Node.js's HTTP/1.1 parser (pure C). Built static; the release

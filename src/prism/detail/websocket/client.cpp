@@ -136,7 +136,7 @@ vio::task_t<std::shared_ptr<ws_connection_t>> connect_client(vio::event_loop_t &
     {
       co_return nullptr;
     }
-    buffer.append(chunk->base, chunk->len);
+    buffer.append(reinterpret_cast<const char *>(chunk.data()), chunk.size());
     if (buffer.size() > options.max_header_bytes && options.max_header_bytes != 0)
     {
       co_return nullptr;

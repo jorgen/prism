@@ -7,7 +7,7 @@
 [![CI](https://github.com/jorgen/prism/actions/workflows/ci.yml/badge.svg)](https://github.com/jorgen/prism/actions/workflows/ci.yml)
 
 A lean REST service library for **C++23**, built on
-[vio](https://github.com/jorgen/vio) (async I/O: libuv + coroutines + TLS) and
+[vio](https://github.com/jorgen/vio) (async I/O: its own event loop + coroutines + TLS) and
 [structify](https://github.com/jorgen/structify) (header-only JSON / YAML / CBOR ↔ struct).
 
 The name continues vio's light theme: libuv is *ultraviolet*, vio is *violet io*,

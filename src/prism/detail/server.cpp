@@ -217,7 +217,7 @@ private:
       }
       if (outcome == read_outcome_t::data)
       {
-        if (_codec->feed(buffer->base, buffer->len) == feed_result_t::error)
+        if (_codec->feed(reinterpret_cast<const char *>(buffer.data()), buffer.size()) == feed_result_t::error)
         {
           _status = body_read_status_t::aborted;
           co_return;
@@ -300,7 +300,7 @@ vio::task_t<bool> drain_request_body(request_codec_t &codec, Transport &transpor
     {
       co_return false;
     }
-    if (codec.feed(buffer->base, buffer->len) == feed_result_t::error)
+    if (codec.feed(reinterpret_cast<const char *>(buffer.data()), buffer.size()) == feed_result_t::error)
     {
       co_return false;
     }
@@ -368,7 +368,7 @@ vio::task_t<void> serve_connection_impl(Transport transport, std::shared_ptr<con
           request_started = true;
           deadline = std::chrono::steady_clock::now() + options.header_timeout;
         }
-        if (codec.feed(buffer->base, buffer->len) == feed_result_t::error)
+        if (codec.feed(reinterpret_cast<const char *>(buffer.data()), buffer.size()) == feed_result_t::error)
         {
           status_t status = codec.error_status();
           emit(logger, log_level_t::warn, "malformed request -> " + std::to_string(static_cast<int>(status)));
@@ -542,7 +542,7 @@ vio::task_t<void> serve_connection_tls(vio::ssl_server_client_t client, std::sha
 vio::task_t<void> serve_connection(vio::tcp_t client, std::shared_ptr<const router_t> router, std::shared_ptr<const logger_t> logger, server_options_t options)
 {
   vio::event_loop_t &loop = client.handle->event_loop;
-  std::string client_ip = vio::peer_ip(client.get_tcp());
+  std::string client_ip = vio::peer_ip(client);
   co_await serve_connection_impl(tcp_transport_t{std::move(client), loop, std::nullopt}, std::move(router), std::move(logger), options, std::move(client_ip));
 }
 
@@ -587,7 +587,6 @@ vio::task_t<result_t<void>> serve(vio::tcp_server_t server, std::shared_ptr<cons
     }
 
     auto client = vio::tcp_accept(server);
-    server.tcp.handle->listen.done = false;
     if (!client.has_value())
     {
       continue;
@@ -635,7 +634,6 @@ vio::task_t<result_t<void>> serve_tls(vio::ssl_server_t server, std::shared_ptr<
     }
 
     auto client = vio::ssl_server_accept(server);
-    server.handle->tcp.tcp.handle->listen.done = false;
     if (!client.has_value())
     {
       continue;

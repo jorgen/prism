@@ -29,7 +29,7 @@ result_t<vio::tcp_server_t> bind_one(vio::event_loop_t &loop, const std::string 
   {
     return fail(status_t::internal_server_error, "tcp_create_server: " + server.error().msg);
   }
-  const unsigned int flags = reuseport ? static_cast<unsigned int>(UV_TCP_REUSEPORT) : 0u;
+  const vio::tcp_bind_flags flags = reuseport ? vio::tcp_bind_flags::reuse_port : vio::tcp_bind_flags::none;
   if (ipv6)
   {
     auto addr = vio::ip6_addr(host, static_cast<int>(port));
@@ -121,7 +121,7 @@ bool reuseport_supported(vio::event_loop_t &loop)
   {
     return false;
   }
-  return vio::tcp_bind(probe.value(), reinterpret_cast<const sockaddr *>(&addr.value()), static_cast<unsigned int>(UV_TCP_REUSEPORT)).has_value();
+  return vio::tcp_bind(probe.value(), reinterpret_cast<const sockaddr *>(&addr.value()), vio::tcp_bind_flags::reuse_port).has_value();
 }
 
 std::uint32_t usable_worker_count(vio::event_loop_t &loop, std::uint32_t requested, logger_t &logger)
@@ -131,7 +131,7 @@ std::uint32_t usable_worker_count(vio::event_loop_t &loop, std::uint32_t request
   {
     return workers;
   }
-  logger.log(log_level_t::warn, "SO_REUSEPORT is unavailable on this platform (libuv supports it on Linux, FreeBSD 12+, DragonFly, Solaris 11.4 and AIX 7.3); serving on one worker thread instead of " + std::to_string(workers));
+  logger.log(log_level_t::warn, "SO_REUSEPORT is unavailable on this platform; serving on one worker thread instead of " + std::to_string(workers));
   return 1;
 }
 } // namespace
