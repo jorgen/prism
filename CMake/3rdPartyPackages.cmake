@@ -5,10 +5,10 @@
 # project() name. Build against a local checkout with -DCMDEP_SOURCE_DIR_VIO=<dir>.
 # Run `cmdep lock -DPRISM_BUILD_TESTS=ON` after editing this file.
 
-CmDepFetchGit(vio 6dde1b6
+CmDepFetchGit(vio dde8dfa
     https://github.com/jorgen/vio.git
-    6dde1b6d3b0cd1092bfaccf4a201f0d723aa237a
-    SHA256=0aed5201b64fa1aaf25287f105c13a4f1aac5307b12ffc4d6761d3aef8a3fcbb)
+    dde8dfa2a7f07c2fadc8afd82dd7ccb036b3b8b0
+    SHA256=34a604f180b034ff822d1fabb3c29dfb280c0b6476b4009ce619bcf9a0d34142)
 
 # The same pin as vio's, so the build has one structify whichever declares it first.
 CmDepFetchPackage(structify b114582

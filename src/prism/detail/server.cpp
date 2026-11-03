@@ -649,7 +649,11 @@ vio::task_t<result_t<void>> serve_tls(vio::ssl_server_t server, std::shared_ptr<
     emit(logger, log_level_t::debug, "tls connection accepted");
     [](vio::ssl_server_client_t connection, std::shared_ptr<const router_t> routes, std::shared_ptr<const logger_t> log, server_options_t opts, std::shared_ptr<std::size_t> count) -> vio::detached_task_t
     {
-      auto handshake = co_await vio::ssl_server_client_handshake(connection);
+      auto handshake = co_await tls_handshake_with_timeout(connection.handle->event_loop, connection, opts.handshake_timeout);
+      if (!handshake.has_value() && vio::is_cancelled(handshake.error()))
+      {
+        emit(log, log_level_t::debug, "tls handshake timed out");
+      }
       if (handshake.has_value())
       {
         auto negotiated = vio::ssl_server_client_alpn_selected(connection);

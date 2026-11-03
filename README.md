@@ -525,6 +525,7 @@ Tuning and hardening knobs travel in `server_options_t`, passed to `listen` /
 ```cpp
 prism::server_options_t options;
 options.idle_timeout     = std::chrono::seconds{30};
+options.handshake_timeout = std::chrono::seconds{10}; // TLS handshake must finish in time
 options.header_timeout   = std::chrono::seconds{10};
 options.body_timeout     = std::chrono::seconds{30};
 options.write_timeout    = std::chrono::seconds{30};

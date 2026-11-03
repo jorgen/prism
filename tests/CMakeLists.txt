@@ -24,6 +24,7 @@ add_executable(prism_tests
         acme_jose_tests.cpp
         web_push_tests.cpp
         websocket_tests.cpp
+        tls_server_tests.cpp
 )
 target_link_libraries(prism_tests PRIVATE prism doctest_main doctest::doctest)
 

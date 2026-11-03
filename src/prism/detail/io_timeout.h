@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <span>
 #include <string>
@@ -162,6 +163,31 @@ inline vio::task_t<read_into_result_t> tls_read_into_with_timeout(vio::event_loo
     co_return read_into_result_t{0, read_outcome_t::timed_out};
   }
   co_return read_into_result_t{0, r.error().code == vio::errc::eof ? read_outcome_t::eof : read_outcome_t::error};
+}
+
+// Awaits the server-side TLS handshake; a timer cancels it after `timeout`.
+inline vio::task_t<std::expected<void, vio::error_t>> tls_handshake_with_timeout(vio::event_loop_t &loop, vio::ssl_server_client_t &client, std::chrono::milliseconds timeout)
+{
+  if (timeout <= std::chrono::milliseconds::zero())
+  {
+    co_return co_await vio::ssl_server_client_handshake(client);
+  }
+
+  vio::cancellation_t token;
+  vio::cancellation_t stop;
+  auto watchdog = [](vio::event_loop_t &el, vio::cancellation_t &tok, vio::cancellation_t &stp, std::chrono::milliseconds dur) -> vio::task_t<void>
+  {
+    auto fired = co_await vio::sleep(el, dur, &stp);
+    if (fired.has_value() && !stp.is_cancelled())
+    {
+      tok.cancel();
+    }
+  }(loop, token, stop, timeout);
+
+  auto result = co_await vio::ssl_server_client_handshake(client, &token);
+  stop.cancel();
+  co_await std::move(watchdog);
+  co_return result;
 }
 
 inline vio::task_t<write_outcome_t> write_tcp_with_timeout(vio::event_loop_t &loop, vio::tcp_t &client, std::string wire, std::chrono::milliseconds timeout)

@@ -25,12 +25,12 @@ CmDepLocked(structify
     REQUESTED_BY [==[.=b114582]==] [==[vio=b114582]==])
 
 CmDepLocked(vio
-    VERSION [==[6dde1b6]==]
+    VERSION [==[dde8dfa]==]
     GIT [==[https://github.com/jorgen/vio.git]==]
-    COMMIT 6dde1b6d3b0cd1092bfaccf4a201f0d723aa237a
-    HASH SHA256=0aed5201b64fa1aaf25287f105c13a4f1aac5307b12ffc4d6761d3aef8a3fcbb
+    COMMIT dde8dfa2a7f07c2fadc8afd82dd7ccb036b3b8b0
+    HASH SHA256=34a604f180b034ff822d1fabb3c29dfb280c0b6476b4009ce619bcf9a0d34142
     DECLARED_BY .
-    REQUESTED_BY [==[.=6dde1b6]==])
+    REQUESTED_BY [==[.=dde8dfa]==])
 
 CmDepLocked(ada
     VERSION [==[3.2.4]==]

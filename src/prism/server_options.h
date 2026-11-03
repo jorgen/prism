@@ -15,6 +15,10 @@ enum class protocol_t : std::uint8_t
 struct server_options_t
 {
   std::chrono::milliseconds idle_timeout = std::chrono::seconds{60};
+  // TLS only: how long a client gets to complete the handshake. A peer that
+  // connects and never finishes would otherwise hold a descriptor forever.
+  // 0 disables the limit.
+  std::chrono::milliseconds handshake_timeout = std::chrono::seconds{10};
   std::chrono::milliseconds header_timeout = std::chrono::seconds{30};
   std::chrono::milliseconds body_timeout = std::chrono::seconds{60};
   std::chrono::milliseconds write_timeout = std::chrono::seconds{60};
