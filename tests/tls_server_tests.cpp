@@ -156,7 +156,7 @@ vio::task_t<bool> silent_client_closed(vio::event_loop_t &loop, int port)
   }
   stop.cancel();
   co_await std::move(guard);
-  co_return closed;
+  co_return bool{closed};
 }
 } // namespace
 
